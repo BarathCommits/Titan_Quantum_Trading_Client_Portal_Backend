@@ -1,0 +1,55 @@
+# OS Metadata
+.DS_Store
+Thumbs.db
+*.ico
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Node & Package Managers (NestJS/Next.js/React dependencies)
+node_modules/
+jspm_packages/
+.npm/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build & Compilation Outputs
+dist/
+build/
+.next/
+out/
+.docusaurus/
+.cache/
+
+# Environment Secrets (Crucial for Doppler or local .env fallback configs)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+*.pem
+*.key
+
+# Logs and runtime caches
+logs
+*.log
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Test and coverage folders
+coverage/
+.nyc_output/
+*.pdf
+funds*
