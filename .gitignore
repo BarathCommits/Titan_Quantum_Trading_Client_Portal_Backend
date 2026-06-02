@@ -56,3 +56,6 @@ funds*
 
 # Temporary user files
 issues.txt
+
+# Go Build Binaries
+backend-payments/bin/
