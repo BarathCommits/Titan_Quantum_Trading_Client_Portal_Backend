@@ -1,32 +1,51 @@
 # Titan Backend Core — CLAUDE.md
 
-This file provides specific build, test, run commands, and database integrity guidelines for the NestJS backend-core service.
+This file provides specific development commands, coding conventions, and database rules for the NestJS core backend service.
 
 ---
 
-## 1. Development Commands
+## 1. Runtime Environment Specification
 
+* **Node.js:** `v22.18.0` (npm `v10+`)
+* **Framework:** NestJS `v10+`
+* **Programming Language:** TypeScript (strict mode enabled in `tsconfig.json`)
+
+---
+
+## 2. Service Development Commands
+
+Run these commands inside the `/backend-core` directory:
 * **Install dependencies:** `npm install`
-* **Start service (Dev):** `npm run start:dev`
-* **Build application:** `npm run build`
+* **Start dev server (auto-reload):** `npm run start:dev`
+* **Build production package:** `npm run build`
+* **Run lint checks:** `npm run lint`
+* **Auto-fix lint errors:** `npm run lint -- --fix`
+* **Format source files:** `npm run format`
 * **Run unit tests:** `npm run test`
-* **Run E2E tests:** `npm run test:e2e`
-* **Lint codebase:** `npm run lint`
-* **Format code:** `npm run format`
+* **Run integration tests:** `npm run test:e2e`
 
 ---
 
-## 2. Coding Guidelines & Project Conventions
+## 3. Strict Pre-Commit Verification Workflow
 
-* **Language:** TypeScript. Ensure strict mode is enabled in `tsconfig.json`.
-* **Imports:** Use clean ES module imports. Group external modules above local modules.
-* **Architecture:** Enforce NestJS module isolation. Keep domain logic within isolated modules (e.g., `LedgerModule`, `AuthModule`, `PoolModule`, `ProfileModule`).
+Before staging or committing any NestJS files, you **must**:
+1. Run `npm run lint` to check for code violations.
+2. Run `npm run format` to ensure stylistic consistency.
+3. Run `npm run test` to verify that unit tests compile and pass.
 
 ---
 
-## 3. Strict Database & Ledger Constraints
+## 4. Coding & Quality Standards
 
-* **Ledger Immutability:** The `core.ledger_entries` table is strictly append-only. Never write or execute `UPDATE` or `DELETE` queries on ledger records. Adjust balances by booking offsets (`PROFIT_REVERSAL`, `ROUNDING_ADJUSTMENT`, etc.).
-* **RLS Isolation:** Enforce RLS session parameters. Always run queries accessing user-owned tables inside a transaction block setting `SET LOCAL app.current_tenant_id = '<tenant-uuid>'`.
-* **Cross-Schema Separation:** Never join tables in the `core` schema with the `payments` schema. Use soft UUID text columns instead of foreign keys.
-* **Pool Capacity Race Condition:** Always query pool state with a row lock `SELECT ... FOR UPDATE` before allocating a deposit to prevent concurrency issues.
+* **TypeScript Strictness:** Never use the `any` type. Explicitly define model, query, and response types.
+* **Module Structure:** Group database tables, services, and controllers into isolated NestJS modules (e.g., `AuthModule`, `LedgerModule`, `PoolModule`, `ProfileModule`). Avoid circular dependencies.
+* **Service Boundaries:** Keep HTTP Controllers lean. Place all business validations, ledger calculations, and transaction locking in Service layers.
+
+---
+
+## 5. Core Database & Ledger Rules
+
+* **Ledger Immutability:** Never run `UPDATE` or `DELETE` on `core.ledger_entries`. All balances must be derived. Adjustments must use offsets.
+* **RLS Tenant Isolation:** Enable database RLS. Wrap user-owned table queries in transaction blocks executing `SET LOCAL app.current_tenant_id = '<tenant-uuid>'` first.
+* **Soft Schema Links:** Link `core` tables to `payments` using plain text UUIDs without database-level FK constraints.
+* **Concurrency Locking:** Query pool state using `SELECT ... FOR UPDATE` inside transactions before allocating client deposits.
