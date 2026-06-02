@@ -38,6 +38,7 @@ Before staging or committing any NestJS files, you **must**:
 ## 4. Coding & Quality Standards
 
 * **TypeScript Strictness:** Never use the `any` type. Explicitly define model, query, and response types.
+* **Database ORM:** Use TypeORM (`@nestjs/typeorm`) for managing database connection states, entities, and migration runs.
 * **Module Structure:** Group database tables, services, and controllers into isolated NestJS modules (e.g., `AuthModule`, `LedgerModule`, `PoolModule`, `ProfileModule`). Avoid circular dependencies.
 * **Service Boundaries:** Keep HTTP Controllers lean. Place all business validations, ledger calculations, and transaction locking in Service layers.
 
