@@ -9,7 +9,8 @@
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS payments;
 
--- Enable UUID extension for cryptographically secure identifier generation
+-- gen_random_uuid() is used throughout (built-in, PostgreSQL 13+)
+-- uuid-ossp retained for compatibility if migrating to older PostgreSQL versions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
@@ -136,7 +137,7 @@ CREATE TABLE core.user_profiles (
     country TEXT NOT NULL,
     bank_account_number TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (AES-256-GCM application encrypted)
     bank_routing_info TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (AES-256-GCM application encrypted JSON)
-    currency_preference TEXT NOT NULL DEFAULT 'EUR', -- P1 Fix: V1 is EUR-only (CEO confirmed EU scope). Was incorrectly defaulting to 'USD'.
+    currency_preference TEXT NOT NULL DEFAULT 'EUR', -- P1 Fix: V1 is EUR-only (CEO confirmed EU scope).
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -174,7 +175,8 @@ CREATE TABLE core.investments (
     start_date DATE,
     maturity_date DATE,
     status core.investment_status NOT NULL DEFAULT 'PENDING_DEPOSIT',
-    minimum_capital_floor_usd NUMERIC(18,2) NOT NULL DEFAULT 5000.00 CHECK (minimum_capital_floor_usd >= 0.00),
+    minimum_capital_floor NUMERIC(18,2) NOT NULL DEFAULT 5000.00 CHECK (minimum_capital_floor >= 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Multi-currency V1/V2 design
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_dates CHECK (maturity_date IS NULL OR start_date IS NULL OR maturity_date >= start_date)
@@ -188,7 +190,8 @@ CREATE TABLE core.investment_risk_splits (
     investment_id UUID NOT NULL REFERENCES core.investments(id) ON DELETE CASCADE,
     risk_profile core.risk_profile NOT NULL,
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd >= 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount >= 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -200,7 +203,8 @@ CREATE TABLE core.investment_pool_allocations (
     investment_id UUID NOT NULL REFERENCES core.investments(id),
     pool_id UUID NOT NULL REFERENCES core.pools(id),
     owned_by_admin_id UUID NOT NULL REFERENCES core.admins(id),
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd > 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount > 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
     status core.allocation_status NOT NULL DEFAULT 'ACTIVE',
     allocated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -217,7 +221,8 @@ CREATE TABLE core.ledger_entries (
     pool_id UUID REFERENCES core.pools(id),
     entry_type core.ledger_entry_type NOT NULL,
     direction core.ledger_direction NOT NULL,
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd >= 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount >= 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     original_amount NUMERIC(18,2) NOT NULL CHECK (original_amount >= 0.00),
     original_currency TEXT NOT NULL CHECK (length(original_currency) = 3),
     fx_rate NUMERIC(12,6) NOT NULL DEFAULT 1.000000 CHECK (fx_rate > 0),
@@ -235,21 +240,34 @@ CREATE TABLE core.monthly_balance_snapshots (
     investment_id UUID NOT NULL REFERENCES core.investments(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES core.users(id) ON DELETE CASCADE,
     snapshot_month DATE NOT NULL CHECK (snapshot_month = date_trunc('month', snapshot_month)::date),
-    snapshot_balance_usd NUMERIC(18,2) NOT NULL,
+    snapshot_balance NUMERIC(18,2) NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (investment_id, snapshot_month)
 );
 
 COMMENT ON TABLE core.monthly_balance_snapshots IS 'End-of-month closing balance aggregations. Bounds dynamic summation scans to a maximum of 31 days.';
 
--- K. WITHDRAWAL REQUESTS TABLE
+-- K1. NOTICE PERIOD CONFIGURATION TABLE (Allows dynamic tiers without DDL migrations - Issue 6 fix)
+CREATE TABLE core.notice_period_config (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    notice_days INTEGER UNIQUE NOT NULL CHECK (notice_days > 0),
+    label TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE core.notice_period_config IS 'Stores the valid notice period configurations for withdrawal requests.';
+
+-- K2. WITHDRAWAL REQUESTS TABLE
 CREATE TABLE core.withdrawal_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES core.users(id),
     investment_id UUID NOT NULL REFERENCES core.investments(id),
     type core.withdrawal_type NOT NULL,
-    amount_requested_usd NUMERIC(18,2) NOT NULL CHECK (amount_requested_usd > 0.00),
-    notice_days INTEGER NOT NULL CHECK (notice_days IN (15, 30, 45)),
+    amount_requested NUMERIC(18,2) NOT NULL CHECK (amount_requested > 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
+    notice_days INTEGER NOT NULL REFERENCES core.notice_period_config(notice_days), -- FK reference replacing hardcoded CHECK
     status core.withdrawal_status NOT NULL DEFAULT 'SUBMITTED',
     notice_start_date DATE,
     ready_date DATE,
@@ -269,7 +287,8 @@ CREATE TABLE core.withdrawal_tasks (
     withdrawal_request_id UUID NOT NULL REFERENCES core.withdrawal_requests(id) ON DELETE CASCADE,
     pool_id UUID NOT NULL REFERENCES core.pools(id),
     admin_id UUID NOT NULL REFERENCES core.admins(id),
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd > 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount > 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
     status core.withdrawal_task_status NOT NULL DEFAULT 'PENDING',
     failure_reason TEXT,
@@ -336,7 +355,7 @@ COMMENT ON TABLE payments.bank_transactions IS 'Logs transactions pulled via ban
 -- A. Foreign Key Indexing (Eliminates full table scans on cascading deletions/joins)
 CREATE INDEX idx_admins_created_by ON core.admins(created_by);
 CREATE INDEX idx_user_profiles_user_id ON core.user_profiles(user_id);
-CREATE INDEX idx_pools_trading_account_id ON core.pools(trading_account_id);
+-- idx_pools_trading_account_id removed (Issue 7 Fix: redundant as idx_pools_account_status leading column covers this)
 CREATE INDEX idx_pools_owned_by ON core.pools(owned_by);
 CREATE INDEX idx_pools_created_by ON core.pools(created_by);
 CREATE INDEX idx_investments_user_id ON core.investments(user_id);
@@ -359,18 +378,15 @@ CREATE INDEX idx_withdrawal_tasks_admin_id ON core.withdrawal_tasks(admin_id);
 CREATE INDEX idx_withdrawal_tasks_approved_by ON core.withdrawal_tasks(approved_by);
 
 -- B. Composite Covered Index for Ledger Balance Calculations
--- Highly targeted index including numeric values to bypass HEAP fetches completely
 CREATE INDEX idx_ledger_balance_calc 
 ON core.ledger_entries(investment_id, status, created_at) 
-INCLUDE (amount_usd, direction);
+INCLUDE (amount, direction); -- Updated amount_usd to amount
 
 -- C. Ordered Descending Composite Index for Monthly Balance Snapshots
--- Fetches the singular latest month closing record in < 1 millisecond
 CREATE INDEX idx_snapshots_latest_lookup 
 ON core.monthly_balance_snapshots(investment_id, snapshot_month DESC);
 
 -- E. Partial Index for Queue Outbox Worker
--- Maximizes polling performance: excludes all published rows from index space
 CREATE INDEX idx_outbox_events_unprocessed 
 ON core.outbox_events(created_at) 
 WHERE (published = false);
@@ -380,18 +396,18 @@ CREATE INDEX idx_bank_txns_recon_covering
 ON payments.bank_transactions(status, bank_reference_id)
 INCLUDE (amount_eur, value_date);
 
--- G. Audit Log Indexes (P1 Fix — without these, admin activity panel and compliance queries are full sequential scans)
+-- G. Audit Log Indexes
 CREATE INDEX idx_audit_log_actor_id ON core.audit_log(actor_id, created_at DESC);
 CREATE INDEX idx_audit_log_entity   ON core.audit_log(entity_id, entity_type, created_at DESC);
 
--- H. Composite Pool Status Index (P3 Fix — pool list view filters by trading account + status in every admin query)
+-- H. Composite Pool Status Index
 CREATE INDEX idx_pools_account_status ON core.pools(trading_account_id, status);
 
--- I. Withdrawal Requests Status Index (admin withdrawal queue filters by status constantly)
+-- I. Withdrawal Requests Status Index
 CREATE INDEX idx_withdrawal_requests_status ON core.withdrawal_requests(status, ready_date)
   WHERE status IN ('NOTICE_PERIOD', 'READY_FOR_APPROVAL', 'TASKS_PENDING');
 
--- J. Investments Maturity Check Index (daily cron checks maturity_date = today, status = ACTIVE)
+-- J. Investments Maturity Check Index
 CREATE INDEX idx_investments_maturity_cron ON core.investments(maturity_date, status)
   WHERE status = 'ACTIVE';
 
@@ -401,7 +417,6 @@ CREATE INDEX idx_investments_maturity_cron ON core.investments(maturity_date, st
 -- ============================================================================
 
 -- A. Strict Append-Only Trigger for Ledger Entries
--- Defends financial ledgers against any manual DB manipulation or SQL injection
 CREATE OR REPLACE FUNCTION core.prevent_ledger_modification()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -438,18 +453,26 @@ CREATE TRIGGER update_withdrawal_requests_modtime
 BEFORE UPDATE ON core.withdrawal_requests
 FOR EACH ROW EXECUTE FUNCTION core.update_timestamp_column();
 
+-- C. Decoupled Schema Auto-Update Trigger Function (Issue 3 Fix: isolates payments from core)
+CREATE OR REPLACE FUNCTION payments.update_timestamp_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TRIGGER update_bank_transactions_modtime
 BEFORE UPDATE ON payments.bank_transactions
-FOR EACH ROW EXECUTE FUNCTION core.update_timestamp_column();
+FOR EACH ROW EXECUTE FUNCTION payments.update_timestamp_column();
 
 
 -- ============================================================================
--- 5. DATA INTEGRITY TRIGGERS (P0 Fixes from Design Review)
+-- 5. DATA INTEGRITY TRIGGERS (Enforces mathematical splits and deferred complete checks)
 -- ============================================================================
 
--- C. Risk Split Sum-to-100 Enforcement (P0 Fix)
--- Prevents splits like 40/40/40 = 120% which corrupt profit distribution maths.
--- Cannot be a simple CHECK constraint — requires summing across multiple rows.
+-- A. Risk Split Triggers
+-- Mid-Transaction Guard (Checks SUM <= 100 on every row insert/update)
 CREATE OR REPLACE FUNCTION core.validate_risk_splits_sum()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -471,10 +494,32 @@ CREATE TRIGGER enforce_risk_splits_sum
 AFTER INSERT OR UPDATE ON core.investment_risk_splits
 FOR EACH ROW EXECUTE FUNCTION core.validate_risk_splits_sum();
 
+-- Commit-Time Guard (Issue 1 Fix: checks SUM = 100 at commit time deferred)
+CREATE OR REPLACE FUNCTION core.validate_risk_splits_complete()
+RETURNS TRIGGER AS $$
+DECLARE
+  total_pct NUMERIC(6,2);
+BEGIN
+  SELECT COALESCE(SUM(percentage), 0)
+    INTO total_pct
+    FROM core.investment_risk_splits
+   WHERE investment_id = NEW.investment_id;
 
--- D. Withdrawal Task Sum-to-100 Enforcement (P0 Fix)
--- Prevents task generation bugs where tasks total 95% or 110%,
--- which would underpay or overpay the client with no database error.
+  IF total_pct != 100.00 THEN
+    RAISE EXCEPTION 'INTEGRITY ERROR: Risk splits for investment_id=% must sum to exactly 100.00%%. Current total: %%', NEW.investment_id, total_pct;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER enforce_risk_splits_complete
+AFTER INSERT OR UPDATE ON core.investment_risk_splits
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION core.validate_risk_splits_complete();
+
+
+-- B. Withdrawal Task Triggers
+-- Mid-Transaction Guard (Checks SUM <= 100 on every row insert/update)
 CREATE OR REPLACE FUNCTION core.validate_withdrawal_tasks_sum()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -496,20 +541,110 @@ CREATE TRIGGER enforce_withdrawal_tasks_sum
 AFTER INSERT OR UPDATE ON core.withdrawal_tasks
 FOR EACH ROW EXECUTE FUNCTION core.validate_withdrawal_tasks_sum();
 
+-- Commit-Time Guard (Issue 2 Fix: checks SUM = 100 at commit time deferred)
+CREATE OR REPLACE FUNCTION core.validate_withdrawal_tasks_complete()
+RETURNS TRIGGER AS $$
+DECLARE
+  total_pct NUMERIC(6,2);
+BEGIN
+  SELECT COALESCE(SUM(percentage), 0)
+    INTO total_pct
+    FROM core.withdrawal_tasks
+   WHERE withdrawal_request_id = NEW.withdrawal_request_id;
+
+  IF total_pct != 100.00 THEN
+    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal tasks for request_id=% must sum to exactly 100.00%%. Current total: %%', NEW.withdrawal_request_id, total_pct;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER enforce_withdrawal_tasks_complete
+AFTER INSERT OR UPDATE ON core.withdrawal_tasks
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION core.validate_withdrawal_tasks_complete();
+
 
 -- ============================================================================
--- 6. DESIGN NOTES FOR FUTURE ENGINEERS
+-- 6. ROW LEVEL SECURITY (RLS) POLICIES (Tenant Isolation - Issue 5 Fix)
 -- ============================================================================
 
--- NOTE (P2): notice_days CHECK constraint
--- Current: CHECK (notice_days IN (15, 30, 45)) — hardcoded in schema.
--- Risk: A CEO decision to change tiers (e.g. 7, 30, 60) requires ALTER TABLE on live DB.
--- V2 Plan: Create a core.notice_period_config table storing valid options.
---          Application validates against config table. Schema stays flexible.
---          Schema migration deferred until CEO confirms final tiers (see Open Items).
+-- Enable RLS on all user data tables
+ALTER TABLE core.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investment_risk_splits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investment_pool_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.withdrawal_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.monthly_balance_snapshots ENABLE ROW LEVEL SECURITY;
 
--- NOTE (P2): Maturity cron guard
--- The daily cron checking investments WHERE maturity_date = today
--- MUST include: AND status = 'ACTIVE'
--- Prevents double-processing on cron retry or accidental re-run.
--- Enforced in application code, not schema. Documented here for visibility.
+-- A. Users Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.users
+  FOR ALL
+  USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+-- B. User Profiles Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.user_profiles
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- C. Investments Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.investments
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- D. Ledger Entries Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.ledger_entries
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- E. Risk Splits Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.investment_risk_splits
+  FOR ALL
+  USING (investment_id IN (
+    SELECT id FROM core.investments WHERE user_id IN (
+      SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+  ));
+
+-- F. Pool Allocations Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.investment_pool_allocations
+  FOR ALL
+  USING (investment_id IN (
+    SELECT id FROM core.investments WHERE user_id IN (
+      SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+  ));
+
+-- G. Withdrawal Requests Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.withdrawal_requests
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- H. Monthly Balance Snapshots Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.monthly_balance_snapshots
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+
+-- ============================================================================
+-- 7. SEED INITIAL CONFIGURATIONS
+-- ============================================================================
+
+-- Seed default tiers for notice periods
+INSERT INTO core.notice_period_config (notice_days, label) VALUES 
+(15, 'Standard Notice (15 Days)'),
+(30, 'Extended Notice (30 Days)'),
+(45, 'Maximum Notice (45 Days)')
+ON CONFLICT (notice_days) DO NOTHING;

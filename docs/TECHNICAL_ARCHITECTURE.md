@@ -8,7 +8,7 @@
 
 ## 1. System Topology & Internal Networking
 
-The Titan Funds Platform operates as a decoupled **3-Service Hybrid Split** running on a single **Hetzner CX22 instance** inside isolated Docker containers. External traffic is mediated by Nginx, which acts as the singular public-facing gateway. All downstream containers are strictly bound to Docker's internal bridge network.
+The Titan Funds Platform operates as a decoupled **3-Service Hybrid Split** running on a single **Hetzner CX32 instance** (selected for resource safety and GC spikes under load) inside isolated Docker containers. External traffic is mediated by Nginx, which acts as the singular public-facing gateway. All downstream containers are strictly bound to Docker's internal bridge network.
 
 ```
        [ Client Browser / Admin Dashboard ]
@@ -156,13 +156,13 @@ LIMIT 1;
 
 ## 5. Ephemeral Infrastructure & Disaster Recovery
 
-The single-server **Hetzner CX22 (€3.79/month)** is designed to be fully disposable. Docker images are ephemeral and can be rebuilt instantly from our **GitLab CI/CD container registry**. 
+The single-server **Hetzner CX32 (€6.80/month)** is designed to be fully disposable. We chose the **CX32 (4 vCPU, 8 GB RAM, 80 GB NVMe)** to replace the under-provisioned CX22, providing 6+ GB of RAM headroom to absorb transient NestJS and Next.js garbage collection (GC) spikes without risk of Out-Of-Memory (OOM) event loop lockups. Docker images are ephemeral and can be rebuilt instantly from our **GitLab CI/CD container registry**. 
 
 ### 5.1 Volume Separation strategy
 All persistent database storage is mapped to a dedicated **Hetzner Volume (100 GB NVMe)**, which lives independently of the VM lifecycle.
 
 ```
-Hetzner CX22 Ephemeral Disk (40 GB NVMe)
+Hetzner CX32 Ephemeral Disk (80 GB NVMe)
   └── OS, Nginx configs, Docker system files, compiled service binaries
 
 Hetzner Block Volume (100 GB NVMe) — Mounted to VM
@@ -171,7 +171,7 @@ Hetzner Block Volume (100 GB NVMe) — Mounted to VM
 
 ### 5.2 Recovery Runbook (Mean Time to Repair < 5 Minutes)
 If the host server experiences a critical OS failure or hardware crash:
-1. Provision a new **Hetzner CX22 instance** in the same region.
+1. Provision a new **Hetzner CX32 instance** in the same region.
 2. Detach the **Hetzner Volume** from the crashed server via the Hetzner Cloud Console.
 3. Attach the Volume to the new instance.
 4. Mount the volume data directory.
@@ -229,14 +229,68 @@ export function decryptPII(cipherTextWithMetadata: string, encryptionKeyHex: str
 PostgreSQL Row-Level Security (RLS) is used to isolate tenant data. Each request executes within a database session transaction where the active `tenant_id` context is set as a session variable.
 
 ```sql
--- DDL to enforce RLS
+-- Enable RLS on all client data tables
 ALTER TABLE core.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE core.ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investment_risk_splits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investment_pool_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.withdrawal_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.monthly_balance_snapshots ENABLE ROW LEVEL SECURITY;
 
--- Dynamic isolation policy: session tenant must match table row tenant
+-- A. Users Tenant Isolation Policy
 CREATE POLICY tenant_isolation_policy ON core.users
   FOR ALL
   USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+-- B. Other User-related Tables Tenant Isolation Policy (checked via core.users tenant subquery)
+CREATE POLICY tenant_isolation_policy ON core.user_profiles
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+CREATE POLICY tenant_isolation_policy ON core.investments
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+CREATE POLICY tenant_isolation_policy ON core.ledger_entries
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+CREATE POLICY tenant_isolation_policy ON core.withdrawal_requests
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+CREATE POLICY tenant_isolation_policy ON core.monthly_balance_snapshots
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- C. Nested Tables Tenant Isolation Policy (checked via core.investments parent subquery)
+CREATE POLICY tenant_isolation_policy ON core.investment_risk_splits
+  FOR ALL
+  USING (investment_id IN (
+    SELECT id FROM core.investments WHERE user_id IN (
+      SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+  ));
+
+CREATE POLICY tenant_isolation_policy ON core.investment_pool_allocations
+  FOR ALL
+  USING (investment_id IN (
+    SELECT id FROM core.investments WHERE user_id IN (
+      SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+  ));
 ```
 During a NestJS service invocation, the connection context executes:
 `SET LOCAL app.current_tenant_id = 'user-tenant-uuid-here';`
@@ -259,23 +313,34 @@ DB_HOST="postgres"
 DB_USER="postgres"
 DB_NAME="titan"
 S3_BUCKET="titan-vault-backups"
-BACKUP_FILE="${BACKUP_DIR}/titan_backup_${TIMESTAMP}.sql.gz"
+BACKUP_FILE="${BACKUP_DIR}/titan_backup_${TIMESTAMP}.dump" -- Custom dump file (Issue 5 Part 2 Fix: remove gzip double compression)
 
 mkdir -p ${BACKUP_DIR}
 
-# Execute pg_dump using compressed Custom format (-Fc) for all schemas
-PGPASSWORD="${DB_PASSWORD}" pg_dump -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -Fc | gzip > ${BACKUP_FILE}
+# Execute pg_dump using native Custom format (-Fc) for all schemas (built-in compression)
+PGPASSWORD="${DB_PASSWORD}" pg_dump -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -Fc -f ${BACKUP_FILE}
 
 # Upload directly to Hetzner Object Storage using AWS-CLI S3 API
 aws --endpoint-url https://nbg1.your-object-storage.host \
-  s3 cp ${BACKUP_FILE} s3://${S3_BUCKET}/daily/titan_backup_${TIMESTAMP}.sql.gz
-
-# Delete backups older than 30 days in the S3 bucket
-aws --endpoint-url https://nbg1.your-object-storage.host \
-  s3 rm s3://${S3_BUCKET}/daily/ --recursive --exclude "*" --include "titan_backup_*.sql.gz" --older-than 30d
+  s3 cp ${BACKUP_FILE} s3://${S3_BUCKET}/daily/titan_backup_${TIMESTAMP}.dump
 
 # Housekeeping: clean local temporary folder
 rm -f ${BACKUP_FILE}
+```
+Instead of running error-prone cleanup scripts inside VM cron files, backup retention is governed at the storage tier using an **S3 Bucket Lifecycle Policy** (Issue 5 Part 2 Fix):
+```bash
+# Apply lifecycle rule once to delete daily backups older than 30 days automatically
+aws --endpoint-url https://nbg1.your-object-storage.host \
+  s3api put-bucket-lifecycle-configuration \
+  --bucket ${S3_BUCKET} \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "delete-old-backups",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "daily/"},
+      "Expiration": {"Days": 30}
+    }]
+  }'
 ```
 If this daily job fails to execute or return a `0` code, Go River triggers an automatic transactional outbox alert (`BACKUP_FAILED`) that emails the `SUPER_ADMIN` immediately.
 
@@ -512,17 +577,20 @@ Below are the complete, production-ready SQL scripts to instantiate the schemas,
 -- ============================================================================
 -- TITAN FUNDS MASTER SCHEMA DEFINITION DDL
 -- Database Compatibility: PostgreSQL 13+
--- Author: Software Engineering Team
+-- Purpose: Complete standalone database initialization script
+-- Authors: Titan Software Engineering Team
 -- ============================================================================
 
+-- Create isolated logical schemas (V2/V3 Database Split path)
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS payments;
 
--- Enable UUID Extension if not default
+-- gen_random_uuid() is used throughout (built-in, PostgreSQL 13+)
+-- uuid-ossp retained for compatibility if migrating to older PostgreSQL versions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
--- 1. ENUM TYPE CREATIONS (Strong Integrity Controls)
+-- 1. CUSTOM ENUM TYPE CREATIONS (Strong Integrity Controls)
 -- ============================================================================
 
 CREATE TYPE core.user_type AS ENUM ('INDIVIDUAL', 'ENTERPRISE');
@@ -533,8 +601,10 @@ CREATE TYPE core.user_status AS ENUM (
   'PENDING_INVESTMENT', 
   'PENDING_DEPOSIT', 
   'ACTIVE', 
-  'MATURED', 
-  'SUSPENDED'
+  'MATURED',
+  'SUSPENDED',
+  'CLOSED',           -- All capital and profit fully withdrawn and settled. Investment lifecycle complete.
+  'GDPR_ANONYMISED'   -- P0 Fix: PII wiped on GDPR erasure request. Financial records retained.
 );
 
 CREATE TYPE core.kyc_status AS ENUM ('NOT_STARTED', 'PENDING', 'APPROVED', 'REJECTED');
@@ -547,6 +617,8 @@ CREATE TYPE core.ledger_entry_type AS ENUM (
   'DEPOSIT', 
   'PROFIT_ALLOCATION', 
   'PROFIT_REVERSAL', 
+  'ACCRUED_DIVIDEND',    -- Accrued monthly dividend (locked until investment maturity date)
+  'DIVIDEND_RELEASE',    -- Debit entry that releases accrued dividends to liquid balance at maturity
   'CAPITAL_LOSS', 
   'CAPITAL_WITHDRAWAL', 
   'PROFIT_WITHDRAWAL', 
@@ -596,8 +668,11 @@ CREATE TABLE core.admins (
     created_by UUID REFERENCES core.admins(id),
     is_active BOOLEAN NOT NULL DEFAULT true,
     last_login_at TIMESTAMPTZ,
+    deactivated_at TIMESTAMPTZ,                    -- P3 Fix: Set when is_active transitions to false. Access removal timestamp directly auditable for compliance.
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+COMMENT ON TABLE core.admins IS 'Internal administrative staff, pool managers, and finance approvers.';
 
 -- B. TRADING ACCOUNTS TABLE
 CREATE TABLE core.trading_accounts (
@@ -609,10 +684,12 @@ CREATE TABLE core.trading_accounts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- C. USERS TABLE (Multi-tenant)
+COMMENT ON TABLE core.trading_accounts IS 'External brokerage or custodian accounts holding physical assets.';
+
+-- C. USERS TABLE (Multi-tenant base)
 CREATE TABLE core.users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id UUID NOT NULL, -- Enforces schema-level multi-tenancy context
+    tenant_id UUID NOT NULL, -- Enforces database tenant boundary for Row-Level Security
     type core.user_type NOT NULL DEFAULT 'INDIVIDUAL',
     email TEXT UNIQUE NOT NULL CHECK (email ~* '^[A-Za-z0-9._%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,4}$'),
     password_hash TEXT NOT NULL,
@@ -622,24 +699,28 @@ CREATE TABLE core.users (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- D. USER PROFILES TABLE (Dynamically Encrypted PII)
+COMMENT ON TABLE core.users IS 'Platform client accounts (both individual retail investors and corporate enterprises).';
+
+-- D. USER PROFILES TABLE (PII cryptographically isolated)
 CREATE TABLE core.user_profiles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID UNIQUE NOT NULL REFERENCES core.users(id) ON DELETE CASCADE,
     full_name TEXT NOT NULL,
-    contact_person TEXT, -- NULL for Individual, filled for Enterprise
+    contact_person TEXT, -- Used for enterprise company representatives
     phone TEXT NOT NULL,
-    address TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (PII Encrypted)
+    address TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (AES-256-GCM application encrypted)
     city TEXT NOT NULL,
     country TEXT NOT NULL,
-    bank_account_number TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (PII Encrypted)
-    bank_routing_info TEXT NOT NULL, -- JSON formatted bank info: cipher:ciphertext:iv:tag (PII Encrypted)
-    currency_preference TEXT NOT NULL DEFAULT 'USD',
+    bank_account_number TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (AES-256-GCM application encrypted)
+    bank_routing_info TEXT NOT NULL, -- Format: cipher:ciphertext:iv:tag (AES-256-GCM application encrypted JSON)
+    currency_preference TEXT NOT NULL DEFAULT 'EUR', -- P1 Fix: V1 is EUR-only (CEO confirmed EU scope).
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- E. POOLS TABLE (Multi-Admin Sub-ledgers)
+COMMENT ON TABLE core.user_profiles IS 'Personally Identifiable Information (PII) encrypted at the application layer to defend against table dump leaks.';
+
+-- E. POOLS TABLE (Multi-Admin sub-ledgers)
 CREATE TABLE core.pools (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     pool_code TEXT UNIQUE NOT NULL, -- Format enforced via app: e.g. ACCA-HIGH-001
@@ -656,11 +737,13 @@ CREATE TABLE core.pools (
     CONSTRAINT pool_capacity_check CHECK (current_transaction_count <= max_transactions)
 );
 
+COMMENT ON TABLE core.pools IS 'Allocated sub-ledgers mapping capital splits to discrete broker accounts managed by individual admins.';
+
 -- F. INVESTMENTS TABLE
 CREATE TABLE core.investments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES core.users(id),
-    pool_id UUID REFERENCES core.pools(id),
+    pool_id UUID REFERENCES core.pools(id), -- Null until mapped by SUPER_ADMIN
     risk_profile core.risk_profile NOT NULL,
     target_return_pct NUMERIC(5,2) NOT NULL CHECK (target_return_pct >= 0.00),
     maturity_months INTEGER NOT NULL CHECK (maturity_months IN (6, 12, 24)),
@@ -668,36 +751,45 @@ CREATE TABLE core.investments (
     start_date DATE,
     maturity_date DATE,
     status core.investment_status NOT NULL DEFAULT 'PENDING_DEPOSIT',
-    minimum_capital_floor_usd NUMERIC(18,2) NOT NULL DEFAULT 5000.00 CHECK (minimum_capital_floor_usd >= 0.00),
+    minimum_capital_floor NUMERIC(18,2) NOT NULL DEFAULT 5000.00 CHECK (minimum_capital_floor >= 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Multi-currency V1/V2 design
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_dates CHECK (maturity_date IS NULL OR start_date IS NULL OR maturity_date >= start_date)
 );
 
--- G. INVESTMENT RISK SPLITS TABLE
+COMMENT ON TABLE core.investments IS 'Master client investment contracts. Risk profiles and returns are locked upon confirmation.';
+
+-- G. INVESTMENT RISK SPLITS TABLE (Multi-risk aggregation splits)
 CREATE TABLE core.investment_risk_splits (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     investment_id UUID NOT NULL REFERENCES core.investments(id) ON DELETE CASCADE,
     risk_profile core.risk_profile NOT NULL,
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd >= 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount >= 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- H. INVESTMENT POOL ALLOCATIONS (Multi-Admin Splitting Slices)
+COMMENT ON TABLE core.investment_risk_splits IS 'Allocations dividing a single investment deposit into multiple risk profiles (e.g. 40% HIGH / 30% MED / 30% LOW).';
+
+-- H. INVESTMENT POOL ALLOCATIONS (Internal multi-pool tracing slices)
 CREATE TABLE core.investment_pool_allocations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     investment_id UUID NOT NULL REFERENCES core.investments(id),
     pool_id UUID NOT NULL REFERENCES core.pools(id),
     owned_by_admin_id UUID NOT NULL REFERENCES core.admins(id),
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd > 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount > 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
     status core.allocation_status NOT NULL DEFAULT 'ACTIVE',
     allocated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     allocated_by UUID NOT NULL REFERENCES core.admins(id)
 );
 
--- I. LEDGER ENTRIES TABLE (Unified Append-Only Books)
+COMMENT ON TABLE core.investment_pool_allocations IS 'Traces active allocations linking a client investment slice to a specific manager pool.';
+
+-- I. LEDGER ENTRIES TABLE (Append-Only Unified Ledger)
 CREATE TABLE core.ledger_entries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES core.users(id),
@@ -705,35 +797,53 @@ CREATE TABLE core.ledger_entries (
     pool_id UUID REFERENCES core.pools(id),
     entry_type core.ledger_entry_type NOT NULL,
     direction core.ledger_direction NOT NULL,
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd >= 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount >= 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     original_amount NUMERIC(18,2) NOT NULL CHECK (original_amount >= 0.00),
     original_currency TEXT NOT NULL CHECK (length(original_currency) = 3),
     fx_rate NUMERIC(12,6) NOT NULL DEFAULT 1.000000 CHECK (fx_rate > 0),
-    reference_id TEXT UNIQUE NOT NULL, -- External txn ID (idempotency key)
+    reference_id TEXT UNIQUE NOT NULL, -- External txn ID or unique system reference (Idempotency key)
     status core.ledger_status NOT NULL DEFAULT 'PENDING',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     metadata JSONB
 );
 
--- J. MONTHLY BALANCE SNAPSHOTS TABLE (High-speed balance summaries)
+COMMENT ON TABLE core.ledger_entries IS 'Strictly append-only unified ledger books. Mutation is blocked via database triggers to preserve regulatory compliance.';
+
+-- J. MONTHLY BALANCE SNAPSHOTS TABLE (High-speed balance query target)
 CREATE TABLE core.monthly_balance_snapshots (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     investment_id UUID NOT NULL REFERENCES core.investments(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES core.users(id) ON DELETE CASCADE,
     snapshot_month DATE NOT NULL CHECK (snapshot_month = date_trunc('month', snapshot_month)::date),
-    snapshot_balance_usd NUMERIC(18,2) NOT NULL,
+    snapshot_balance NUMERIC(18,2) NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (investment_id, snapshot_month)
 );
 
--- K. WITHDRAWAL REQUESTS TABLE
+COMMENT ON TABLE core.monthly_balance_snapshots IS 'End-of-month closing balance aggregations. Bounds dynamic summation scans to a maximum of 31 days.';
+
+-- K1. NOTICE PERIOD CONFIGURATION TABLE (Allows dynamic tiers without DDL migrations)
+CREATE TABLE core.notice_period_config (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    notice_days INTEGER UNIQUE NOT NULL CHECK (notice_days > 0),
+    label TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE core.notice_period_config IS 'Stores the valid notice period configurations for withdrawal requests.';
+
+-- K2. WITHDRAWAL REQUESTS TABLE
 CREATE TABLE core.withdrawal_requests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES core.users(id),
     investment_id UUID NOT NULL REFERENCES core.investments(id),
     type core.withdrawal_type NOT NULL,
-    amount_requested_usd NUMERIC(18,2) NOT NULL CHECK (amount_requested_usd > 0.00),
-    notice_days INTEGER NOT NULL CHECK (notice_days IN (15, 30, 45)),
+    amount_requested NUMERIC(18,2) NOT NULL CHECK (amount_requested > 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
+    notice_days INTEGER NOT NULL REFERENCES core.notice_period_config(notice_days), -- FK reference replacing hardcoded CHECK
     status core.withdrawal_status NOT NULL DEFAULT 'SUBMITTED',
     notice_start_date DATE,
     ready_date DATE,
@@ -745,13 +855,16 @@ CREATE TABLE core.withdrawal_requests (
     CONSTRAINT valid_notice_dates CHECK (ready_date IS NULL OR notice_start_date IS NULL OR ready_date >= notice_start_date)
 );
 
--- L. WITHDRAWAL TASKS TABLE (Individual Sub-allocations for multi-pool requests)
+COMMENT ON TABLE core.withdrawal_requests IS 'Requests submitted by clients to extract interest profits or redeem matured capital investments.';
+
+-- L. WITHDRAWAL TASKS TABLE (Individual sub-tasks for multi-admin pools)
 CREATE TABLE core.withdrawal_tasks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     withdrawal_request_id UUID NOT NULL REFERENCES core.withdrawal_requests(id) ON DELETE CASCADE,
     pool_id UUID NOT NULL REFERENCES core.pools(id),
     admin_id UUID NOT NULL REFERENCES core.admins(id),
-    amount_usd NUMERIC(18,2) NOT NULL CHECK (amount_usd > 0.00),
+    amount NUMERIC(18,2) NOT NULL CHECK (amount > 0.00),
+    currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
     status core.withdrawal_task_status NOT NULL DEFAULT 'PENDING',
     failure_reason TEXT,
@@ -762,7 +875,9 @@ CREATE TABLE core.withdrawal_tasks (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- M. TRANSACTIONAL OUTBOX TABLE
+COMMENT ON TABLE core.withdrawal_tasks IS 'Admin-level liquidation sub-tasks spawned automatically when a withdrawal covers multiple aggregated pools.';
+
+-- M. TRANSACTIONAL OUTBOX TABLE (Solves the dual-write drift challenge)
 CREATE TABLE core.outbox_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_type TEXT NOT NULL,
@@ -772,7 +887,9 @@ CREATE TABLE core.outbox_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- N. AUDIT LOG TABLE
+COMMENT ON TABLE core.outbox_events IS 'Stores outward-bound events transactionally locked inside core updates, picked up by the Go background queue.';
+
+-- N. AUDIT LOG TABLE (Immutable user and admin trails)
 CREATE TABLE core.audit_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_id UUID NOT NULL,
@@ -786,10 +903,12 @@ CREATE TABLE core.audit_log (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- O. BANK TRANSACTIONS TABLE (Decoupled payments schema)
+COMMENT ON TABLE core.audit_log IS 'Immutable platform audit log recording modifications to profiles, allocations, admin accesses, and RLS configurations.';
+
+-- O. BANK TRANSACTIONS TABLE (Isolated payments schema - V2/V3 Split native)
 CREATE TABLE payments.bank_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    bank_reference_id TEXT UNIQUE NOT NULL, -- BOI unique transaction ID
+    bank_reference_id TEXT UNIQUE NOT NULL, -- Bank of Ireland unique transaction identifier
     amount_eur NUMERIC(18,2) NOT NULL,
     remitter_name TEXT NOT NULL,
     remitter_iban TEXT NOT NULL,
@@ -797,12 +916,12 @@ CREATE TABLE payments.bank_transactions (
     memo TEXT,
     value_date DATE NOT NULL,
     status payments.bank_transaction_status NOT NULL DEFAULT 'PENDING',
-    mapped_ledger_entry_id UUID, -- SOFT reference: no physical FK to preserve boundary!
+    mapped_ledger_entry_id UUID, -- Logical soft reference: no physical FK to preserve db decoupling!
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Note: Go River tables are created dynamically by the River Go runtime migration package.
+COMMENT ON TABLE payments.bank_transactions IS 'Logs transactions pulled via bank APIs. Mappings to ledger_entries are handled via soft references to allow physical schema separation.';
 
 
 -- ============================================================================
@@ -812,7 +931,6 @@ CREATE TABLE payments.bank_transactions (
 -- A. Foreign Key Indexing (Eliminates full table scans on cascading deletions/joins)
 CREATE INDEX idx_admins_created_by ON core.admins(created_by);
 CREATE INDEX idx_user_profiles_user_id ON core.user_profiles(user_id);
-CREATE INDEX idx_pools_trading_account_id ON core.pools(trading_account_id);
 CREATE INDEX idx_pools_owned_by ON core.pools(owned_by);
 CREATE INDEX idx_pools_created_by ON core.pools(created_by);
 CREATE INDEX idx_investments_user_id ON core.investments(user_id);
@@ -835,26 +953,38 @@ CREATE INDEX idx_withdrawal_tasks_admin_id ON core.withdrawal_tasks(admin_id);
 CREATE INDEX idx_withdrawal_tasks_approved_by ON core.withdrawal_tasks(approved_by);
 
 -- B. Composite Covered Index for Ledger Balance Calculations
--- Highly targeted index including numeric values to bypass HEAP fetches completely
 CREATE INDEX idx_ledger_balance_calc 
 ON core.ledger_entries(investment_id, status, created_at) 
-INCLUDE (amount_usd, direction);
+INCLUDE (amount, direction);
 
 -- C. Ordered Descending Composite Index for Monthly Balance Snapshots
--- Fetches the singular latest month closing record in < 1 millisecond
 CREATE INDEX idx_snapshots_latest_lookup 
 ON core.monthly_balance_snapshots(investment_id, snapshot_month DESC);
 
--- D. Partial Index for Queue Outbox Worker
--- Maximizes polling performance: excludes all published rows from index space
+-- E. Partial Index for Queue Outbox Worker
 CREATE INDEX idx_outbox_events_unprocessed 
 ON core.outbox_events(created_at) 
 WHERE (published = false);
 
--- E. Covering Index for Payments Reconciliation
+-- F. Covering Index for Payments Reconciliation
 CREATE INDEX idx_bank_txns_recon_covering 
 ON payments.bank_transactions(status, bank_reference_id)
 INCLUDE (amount_eur, value_date);
+
+-- G. Audit Log Indexes
+CREATE INDEX idx_audit_log_actor_id ON core.audit_log(actor_id, created_at DESC);
+CREATE INDEX idx_audit_log_entity   ON core.audit_log(entity_id, entity_type, created_at DESC);
+
+-- H. Composite Pool Status Index
+CREATE INDEX idx_pools_account_status ON core.pools(trading_account_id, status);
+
+-- I. Withdrawal Requests Status Index
+CREATE INDEX idx_withdrawal_requests_status ON core.withdrawal_requests(status, ready_date)
+  WHERE status IN ('NOTICE_PERIOD', 'READY_FOR_APPROVAL', 'TASKS_PENDING');
+
+-- J. Investments Maturity Check Index
+CREATE INDEX idx_investments_maturity_cron ON core.investments(maturity_date, status)
+  WHERE status = 'ACTIVE';
 
 
 -- ============================================================================
@@ -862,7 +992,6 @@ INCLUDE (amount_eur, value_date);
 -- ============================================================================
 
 -- A. Strict Append-Only Trigger for Ledger Entries
--- Defends financial ledgers against any manual DB manipulation or SQL injection
 CREATE OR REPLACE FUNCTION core.prevent_ledger_modification()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -899,16 +1028,208 @@ CREATE TRIGGER update_withdrawal_requests_modtime
 BEFORE UPDATE ON core.withdrawal_requests
 FOR EACH ROW EXECUTE FUNCTION core.update_timestamp_column();
 
+-- C. Decoupled Schema Auto-Update Trigger Function
+CREATE OR REPLACE FUNCTION payments.update_timestamp_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TRIGGER update_bank_transactions_modtime
 BEFORE UPDATE ON payments.bank_transactions
-FOR EACH ROW EXECUTE FUNCTION core.update_timestamp_column();
+FOR EACH ROW EXECUTE FUNCTION payments.update_timestamp_column();
+
+
+-- ============================================================================
+-- 5. DATA INTEGRITY TRIGGERS (Enforces mathematical splits and deferred complete checks)
+-- ============================================================================
+
+-- A. Risk Split Triggers
+-- Mid-Transaction Guard (Checks SUM <= 100 on every row insert/update)
+CREATE OR REPLACE FUNCTION core.validate_risk_splits_sum()
+RETURNS TRIGGER AS $$
+DECLARE
+  total_pct NUMERIC(6,2);
+BEGIN
+  SELECT COALESCE(SUM(percentage), 0)
+    INTO total_pct
+    FROM core.investment_risk_splits
+   WHERE investment_id = NEW.investment_id;
+
+  IF total_pct > 100.00 THEN
+    RAISE EXCEPTION 'INTEGRITY ERROR: Risk split percentages for investment_id=% exceed 100%%. Current total: %%', NEW.investment_id, total_pct;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER enforce_risk_splits_sum
+AFTER INSERT OR UPDATE ON core.investment_risk_splits
+FOR EACH ROW EXECUTE FUNCTION core.validate_risk_splits_sum();
+
+-- Commit-Time Guard (Deferred check ensuring final splits SUM = 100 at commit)
+CREATE OR REPLACE FUNCTION core.validate_risk_splits_complete()
+RETURNS TRIGGER AS $$
+DECLARE
+  total_pct NUMERIC(6,2);
+BEGIN
+  SELECT COALESCE(SUM(percentage), 0)
+    INTO total_pct
+    FROM core.investment_risk_splits
+   WHERE investment_id = NEW.investment_id;
+
+  IF total_pct != 100.00 THEN
+    RAISE EXCEPTION 'INTEGRITY ERROR: Risk splits for investment_id=% must sum to exactly 100.00%%. Current total: %%', NEW.investment_id, total_pct;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER enforce_risk_splits_complete
+AFTER INSERT OR UPDATE ON core.investment_risk_splits
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION core.validate_risk_splits_complete();
+
+
+-- B. Withdrawal Task Triggers
+-- Mid-Transaction Guard (Checks SUM <= 100 on every row insert/update)
+CREATE OR REPLACE FUNCTION core.validate_withdrawal_tasks_sum()
+RETURNS TRIGGER AS $$
+DECLARE
+  total_pct NUMERIC(6,2);
+BEGIN
+  SELECT COALESCE(SUM(percentage), 0)
+    INTO total_pct
+    FROM core.withdrawal_tasks
+   WHERE withdrawal_request_id = NEW.withdrawal_request_id;
+
+  IF total_pct > 100.00 THEN
+    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal task percentages for request_id=% exceed 100%%. Current total: %%', NEW.withdrawal_request_id, total_pct;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER enforce_withdrawal_tasks_sum
+AFTER INSERT OR UPDATE ON core.withdrawal_tasks
+FOR EACH ROW EXECUTE FUNCTION core.validate_withdrawal_tasks_sum();
+
+-- Commit-Time Guard (Deferred check ensuring final tasks SUM = 100 at commit)
+CREATE OR REPLACE FUNCTION core.validate_withdrawal_tasks_complete()
+RETURNS TRIGGER AS $$
+DECLARE
+  total_pct NUMERIC(6,2);
+BEGIN
+  SELECT COALESCE(SUM(percentage), 0)
+    INTO total_pct
+    FROM core.withdrawal_tasks
+   WHERE withdrawal_request_id = NEW.withdrawal_request_id;
+
+  IF total_pct != 100.00 THEN
+    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal tasks for request_id=% must sum to exactly 100.00%%. Current total: %%', NEW.withdrawal_request_id, total_pct;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER enforce_withdrawal_tasks_complete
+AFTER INSERT OR UPDATE ON core.withdrawal_tasks
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION core.validate_withdrawal_tasks_complete();
+
+
+-- ============================================================================
+-- 6. ROW LEVEL SECURITY (RLS) POLICIES (Tenant Isolation)
+-- ============================================================================
+
+-- Enable RLS on all user data tables
+ALTER TABLE core.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investment_risk_splits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.investment_pool_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.withdrawal_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.monthly_balance_snapshots ENABLE ROW LEVEL SECURITY;
+
+-- A. Users Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.users
+  FOR ALL
+  USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+-- B. User Profiles Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.user_profiles
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- C. Investments Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.investments
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- D. Ledger Entries Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.ledger_entries
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- E. Risk Splits Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.investment_risk_splits
+  FOR ALL
+  USING (investment_id IN (
+    SELECT id FROM core.investments WHERE user_id IN (
+      SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+  ));
+
+-- F. Pool Allocations Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.investment_pool_allocations
+  FOR ALL
+  USING (investment_id IN (
+    SELECT id FROM core.investments WHERE user_id IN (
+      SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+    )
+  ));
+
+-- G. Withdrawal Requests Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.withdrawal_requests
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- H. Monthly Balance Snapshots Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.monthly_balance_snapshots
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+
+-- ============================================================================
+-- 7. SEED INITIAL CONFIGURATIONS
+-- ============================================================================
+
+-- Seed default tiers for notice periods
+INSERT INTO core.notice_period_config (notice_days, label) VALUES 
+(15, 'Standard Notice (15 Days)'),
+(30, 'Extended Notice (30 Days)'),
+(45, 'Maximum Notice (45 Days)')
+ON CONFLICT (notice_days) DO NOTHING;
 ```
 
 ---
 
 ## 8. Database Reliability & Query Strategy
 
-To run seamlessly within a **4 GB RAM VPS limit** without performance bottlenecking, we implement two primary structural strategies:
+To run seamlessly within the resource constraints of a single-server setup without performance bottlenecking, we implement two primary structural strategies:
 
 ### 8.1 Ledger Balance Calculation Execution Strategy
 The application layer **never** aggregates the entire historical record set of `core.ledger_entries` directly. Balance calculations are driven by combining:
@@ -930,4 +1251,36 @@ for (const poolId of sortedPoolIds) {
 }
 ```
 Sorting target ids guarantees that concurrent multi-pool threads acquiring locks simultaneously never encounter cross-wait conditions, locking queries safely and ensuring maximum database durability.
+
+---
+
+## 9. Automated Pool Allocation Engine & Algorithm
+
+To eliminate administrative bottlenecks and manual error, the platform integrates an **Automated Pool Allocation Engine** that resolves incoming deposits to open active pools matching the client's risk profiles.
+
+### 9.1 Core Trigger & Workflow
+1. **Inbound Wire Detection:** The Bank of Ireland poller detects a wire transaction and posts a record to `payments.bank_transactions`.
+2. **Deposit Confirmation:** The system matches the wire to an investment. The admin confirms the mapping, creating a `DEPOSIT` ledger credit and transitioning `investments.status` to `ACTIVE`.
+3. **Auto-Allocation Invocation:** The Core Backend detects the transition to `ACTIVE` and runs the allocation engine.
+
+### 9.2 The Allocation Algorithm (Weight Splits and Capacity Matching)
+For a given investment with capital amount $C$ and risk profile splits $S$:
+1. **Split Resolution:** Retrieve risk splits (e.g. 40% HIGH, 30% MEDIUM, 30% LOW). Calculate split amounts (e.g. $C_{HIGH} = 0.40 \times C$).
+2. **Pool Selection Query:** For each risk split, query open pools:
+   ```sql
+   SELECT id, max_transactions, current_transaction_count
+   FROM core.pools
+   WHERE risk_profile = :split_risk_profile
+     AND status = 'OPEN'
+     AND current_transaction_count < max_transactions
+   ORDER BY (max_transactions - current_transaction_count) DESC, created_at ASC;
+   ```
+3. **Capacity Validation & Assignment:**
+   * If a suitable pool has capacity:
+     * Check if allocating the split amount exceeds the pool bounds.
+     * Insert a row into `core.investment_pool_allocations` linking the investment to the selected pool.
+     * Increment the pool's `current_transaction_count` (enforced via row-level locking `FOR UPDATE` to prevent race conditions).
+   * If no open pool has sufficient capacity:
+     * Flag the allocation task as `MANUAL_OVERRIDE` in `core.withdrawal_tasks` or spawn a high-priority system notification.
+     * Queue the exception in `core.outbox_events` to alert the `SUPER_ADMIN` to create a new pool tier.
 

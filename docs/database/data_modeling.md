@@ -56,7 +56,7 @@ The final 3 services are:
 
 **Frontend UI (Next.js, Port 3001)** — Client dashboard and admin portal screens. Completely decoupled from the database. Frontend developers can push UI changes without touching the backend. A security compromise on the presentation layer cannot affect the ledger or database credentials.
 
-Everything runs on a single Hetzner CX22 server (€3.79/month) and uses approximately 1.065 GB of the 4 GB available RAM, leaving 2.935 GB of headroom.
+Everything runs on a single Hetzner CX32 server (€6.80/month) and uses approximately 1.17 GB of the 8 GB available RAM, leaving 6.83 GB of headroom (allowing the platform to safely handle database/garbage collection memory spikes).
 
 ---
 
@@ -272,7 +272,7 @@ If a fixed IV were used, encrypting the same plaintext twice would produce ident
 
 This was Critical Engineering Fix 5. Balance is derived by summing all ledger entries for an investment. A 3-year-old account with monthly profit allocations, periodic withdrawals, and rounding adjustments could have hundreds of ledger rows. Summing all of them on every dashboard load becomes increasingly expensive as accounts age.
 
-On our single Hetzner CX22 server with shared PostgreSQL resources, running unbounded aggregation queries across millions of rows for hundreds of concurrent users would cause serious performance degradation over time.
+On our single Hetzner CX32 server with shared PostgreSQL resources, running unbounded aggregation queries across millions of rows for hundreds of concurrent users would cause serious performance degradation over time.
 
 ### The Fix: Monthly Closing Balance Snapshots
 
@@ -616,20 +616,21 @@ The following rows extend the master decisions table (Section 22) with all decis
 | Decision | What Was Chosen | What Was Rejected | Why |
 |---|---|---|---|
 | `user_status` ENUM completeness | Added `CLOSED` and `GDPR_ANONYMISED` | Leaving them out / using TEXT column | Missing ENUM values cause type errors on live GDPR erasure; TEXT weakens the type system |
-| Risk split percentage enforcement | Database trigger checking sum ≤ 100 | Row-level CHECK constraint alone | CHECK constraints cannot sum across multiple rows; trigger is the only engine-level option |
-| Withdrawal task percentage enforcement | Database trigger checking sum ≤ 100 | Application-level validation only | Application bugs could create under-allocated tasks silently; engine-level block is required |
+| Risk split percentage enforcement | Deferred constraint trigger enforcing exactly = 100% at commit + mid-transaction check ≤ 100% | Row-level CHECK constraint or mid-transaction check alone | Standard triggers only check intermediate steps; deferred checks ensure exact 100% allocation at transaction commit |
+| Withdrawal task percentage enforcement | Deferred constraint trigger enforcing exactly = 100% at commit + mid-transaction check ≤ 100% | Application-level validation only | Mid-transaction check catches over-allocation early; deferred check at commit ensures the tasks sum to exactly 100% |
 | `currency_preference` default | `EUR` | `USD` (was incorrectly set) | V1 is EUR-only by CEO decision; wrong default causes silent data mismatch with ledger |
 | Admin deactivation timestamp | `deactivated_at TIMESTAMPTZ` on admins | Relying on audit log only | Compliance auditors need direct queryable access revocation timestamps |
 | Audit log indexes | Composite indexes on `actor_id` and `entity_id` | No indexes | Without indexes, admin activity panel becomes progressively slower from month one |
 | Maturity cron index | Partial index on `investments(maturity_date, status) WHERE status = 'ACTIVE'` | Full index on all investments | Partial index stays small as closed investments accumulate; full index grows unnecessarily |
 | Withdrawal queue index | Partial index on open statuses only | Full index or no index | Only open requests are ever queried by cron and admin queue; closed history excluded |
 | Pool list view index | Composite index on `(trading_account_id, status)` | Single-column index only | Admin pool list always filters by both columns simultaneously |
-| `notice_days` valid tiers | Hard-coded CHECK constraint with V2 config table plan documented | Config table in V1 | CEO has not confirmed exact tiers; premature config table adds complexity for an unconfirmed requirement |
+| `notice_days` config table | Dynamic `core.notice_period_config` table and foreign key | Hardcoded CHECK constraint | Allowed changing or adding notice period tiers dynamically via config table without schema alteration |
 | Maturity cron double-processing | `AND status = 'ACTIVE'` guard documented in schema and models | No guard | Cron retry without the guard re-notifies already-matured clients |
 | Monthly profit entry math | Automated proportional division per lot allocation | Manual user-by-user profit entry | Manual math is highly error-prone and a critical scaling bottleneck |
 | Accrued dividend separation | Separate locked `ACCRUED_DIVIDEND` entry type | crediting withdrawable profit directly | Direct crediting allows illegal mid-cycle withdrawals, violating the pool lock policy |
 | Maturity release automation | Automated daily cron ledger transfer | Manual payout processing by admins | Manual settlement introduces administrative delays and operational cost |
 | Negative trading months | Netting as negative accrued dividends (DEBIT `ACCRUED_DIVIDEND`) | Immediate capital reductions | Netting monthly balances preserves capital protection constraints until final maturity settlement |
+| Neutral currency representation | Split `amount` and `currency` columns | Hardcoded `_usd` columns | Rebranded columns to neutral naming to support EUR-only V1 while remaining future-proof for multi-currency V2 |
 
 ---
 
@@ -647,7 +648,7 @@ Titan’s initial design assumed admins would manually compute and allocate prof
 We decided to isolate **Accrued (Locked) Profits** from **Liquid (Withdrawable) Profits** by introducing a two-stage ledger ledger structure:
 
 1. **Accrual Stage (Monthly)**:
-   - When a pool manager inputs the monthly pool outcome (supporting both Return % and total USD profit), the system **automatically divides** it.
+   - When a pool manager inputs the monthly pool outcome (supporting both Return % and total pool profit), the system **automatically divides** it.
    - It calculates each lot allocation's share proportionally based on its capital weight in the pool, resolving rounding fractions down to the cent via the **Largest Remainder Method**.
    - These allocations are booked to the ledger as `ACCRUED_DIVIDEND` with direction `CREDIT`. 
    - A negative month (loss) is booked as `ACCRUED_DIVIDEND` with direction `DEBIT`, netting down the accumulated accruals.

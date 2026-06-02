@@ -62,7 +62,7 @@ An admin portal handles:
 | Capability | Description |
 |---|---|
 | Client Onboarding | Sign up, PII collection, agreement signing, investment configuration |
-| Deposit Handling | Clients wire funds globally to Irish account; system tracks via bank webhooks |
+| Deposit Handling | Clients wire funds globally to Irish account; system tracks via bank polling |
 | Pool Management | Admin creates pools, maps transactions, links to trading accounts |
 | Ledger & Accounting | Immutable double-entry ledger; balances always derived, never stored |
 | Profit Distribution | Admin enters pool-level profit; system splits proportionally by capital stake |
@@ -82,7 +82,7 @@ An admin portal handles:
 
 The system runs as **3 focused services** in Docker containers on a single Hetzner CX22 server. Each service is isolated by concern:
 - **Payments & Notifications Service** is written in **Go (Golang)** for a near-zero memory footprint (~15 MB RAM) and rock-solid concurrency using the **River PostgreSQL Queue**.
-- **Core Backend Monolith** is written in **Node.js (NestJS)** to manage secure transaction records, auth states, and multi-tenant ledger entries.
+- **Core Backend Service** is written in **Node.js (NestJS)** to manage secure transaction records, auth states, and multi-tenant ledger entries.
 - **Frontend UI** is written in **Node.js (Next.js)** to render the client portal and admin dashboards, completely separated from backend API logic to ensure zero operational coupling.
 
 This hybrid stack balances **developer velocity** with **extreme infrastructure efficiency and perfect UI/API decoupling**:
@@ -97,14 +97,14 @@ This hybrid stack balances **developer velocity** with **extreme infrastructure 
 |---|---|---|---|
 | **Nginx API Gateway** | 80 / 443 | C / Nginx | Routes all external traffic; SSL termination via Let's Encrypt; API rate limiting. |
 | **Payments & Notifications** | 3003 | **Go (Golang)** | BOI AIS polling (inbound deposits), BOI PIS (outgoing transfers), transactional outbox consumer, **River background job queue**, all email sending via Resend, cron jobs (maturity notices, notice period checking, monthly summaries, backups). |
-| **Core Backend Monolith** | 3000 | **Node.js (NestJS)** | Sign up, sign in, stateless JWT auth token generation, user profile management (AES-256 encrypted PII), double-entry ledger transactions, monthly balance snapshots, pool creation & capacity checks, admin RBAC portal API. |
+| **Core Backend Service** | 3000 | **Node.js (NestJS)** | Sign up, sign in, stateless JWT auth token generation, user profile management (AES-256 encrypted PII), double-entry ledger transactions, monthly balance snapshots, pool creation & capacity checks, admin RBAC portal API. |
 | **Frontend UI** | 3001 | **Node.js (Next.js)** | Client dashboard UI, admin portal screens, forced-scroll investment agreement views, portfolio performance interactive charts. |
 
 ### 3.3 Why These Three Groups
 
 **Payments & Notifications (Go)** — Written in Go to guarantee low memory footprint and high concurrency. Payments and Notifications are naturally two halves of the same event loop (payments trigger notifications, crons trigger notifications). Isolating this service acts as a strict **security sandbox**: your sensitive Bank of Ireland API credentials, certificates, and SMTP keys live *only* in this container. A security exploit in the public frontend or core backend cannot expose your banking APIs.
 
-**Core Backend Monolith (NestJS)** — Manages the stateful Postgres ledger and identity tables. Enforcing ACID compliance on ledger allocations and pool boundaries is vastly simpler in a single backend monolith, completely avoiding distributed transaction overhead.
+**Core Backend Service (NestJS)** — Manages the stateful Postgres ledger and identity tables. Enforcing ACID compliance on ledger allocations and pool boundaries is vastly simpler in a single backend service, completely avoiding distributed transaction overhead.
 
 **Frontend UI (Next.js)** — Keeps the frontend completely decoupled from database access, schemas, and credentials. Separating the UI prevents security compromises on the presentation layer from affecting ledger operations or database credentials. It also allows front-end devs to iterate on client feedback with zero risk to backend stability.
 
@@ -137,7 +137,7 @@ Hetzner CX22 (2 vCPU · 4 GB RAM · 40 GB NVMe)
 
 Nginx                                    ~50 MB
 Payments & Notifications Service (Go)     ~15 MB   ← Go's extremely lightweight runtime
-Core Backend Monolith (NestJS)           ~150 MB   ← isolated Node.js backend runtime
+Core Backend Service (NestJS)            ~150 MB   ← isolated Node.js backend runtime
 Frontend UI (Next.js)                    ~150 MB   ← isolated Node.js UI server runtime
 PostgreSQL                               ~300 MB
 OS + Docker overhead                    ~400 MB
@@ -231,8 +231,8 @@ The initial design had 8 microservices, which we consolidated first to 4, and fi
  
 | Service | Consisted Of | Rationale |
 |---|---|---|
-| **Payments & Notifications** | Payments + Notifications + Crons | **Go (Golang).** Tightly couples the polling webhooks and transactional event messaging. Sandbox security: locks sensitive Bank of Ireland APIs and certificates away from the public dashboard. Written in Go to guarantee low memory usage (~15MB) and bulletproof River background queuing on port 3003. |
-| **Core Backend Monolith** | Identity + Investment + Ledger + Pools + Admin APIs | **Node.js (NestJS).** Avoids complex distributed transactions by running multi-tenant authorization, profiles, ledger accounting, and pool capacity checks in a single atomic database context on port 3000. |
+| **Payments & Notifications** | Payments + Notifications + Crons | **Go (Golang).** Tightly couples the bank polling and transactional event messaging. Sandbox security: locks sensitive Bank of Ireland APIs and certificates away from the public dashboard. Written in Go to guarantee low memory usage (~15MB) and bulletproof River background queuing on port 3003. |
+| **Core Backend Service** | Identity + Investment + Ledger + Pools + Admin APIs | **Node.js (NestJS).** Avoids complex distributed transactions by running multi-tenant authorization, profiles, ledger accounting, and pool capacity checks in a single atomic database context on port 3000. |
 | **Frontend UI** | Client dashboard + Admin dashboard screens | **Node.js (Next.js).** Serving isolated client and admin portals on port 3001, keeping the public presentation layer completely decoupled from backend schemas, database credentials, and stateful calculations. |
  
 **Result:** 8 services → 3 services. Zero cross-service network lag for core ledger operations, strict API sandbox security, dynamic isolated frontends, and a tiny overall memory footprint.
@@ -250,7 +250,7 @@ Runs all Docker containers:
 |---|---|
 | Nginx | ~50 MB |
 | Payments & Notifications Service (Go) | ~15 MB |
-| Core Backend Monolith (NestJS) | ~150 MB |
+| Core Backend Service (NestJS) | ~150 MB |
 | Frontend UI (Next.js) | ~150 MB |
 | PostgreSQL | ~300 MB |
 | OS + Docker overhead | ~400 MB |
@@ -472,7 +472,7 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 | `start_date` | DATE | Set when deposit confirmed |
 | `maturity_date` | DATE | Computed: start_date + maturity_months |
 | `status` | ENUM | `PENDING_DEPOSIT` \| `ACTIVE` \| `MATURED` \| `CLOSED` |
-| `minimum_capital_floor_usd` | NUMERIC(18,2) | Admin-configurable per investment e.g. $5,000 |
+| `minimum_capital_floor` | NUMERIC(18,2) | Admin-configurable per investment e.g. 5,000 |
 
 ---
 
@@ -486,7 +486,8 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 | `investment_id` | UUID FK | Parent investment |
 | `risk_profile` | ENUM | `LOW` \| `MEDIUM` \| `HIGH` |
 | `percentage` | NUMERIC(5,2) | e.g. 40.00 — must sum to 100 across splits |
-| `amount_usd` | NUMERIC(18,2) | Computed from percentage × total deposit |
+| `amount` | NUMERIC(18,2) | Computed from percentage × total deposit |
+| `currency` | TEXT | Currency of split, defaults to EUR |
 
 ---
 
@@ -502,7 +503,8 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 | `pool_id` | UUID FK | |
 | `entry_type` | ENUM | `DEPOSIT` \| `PROFIT_ALLOCATION` \| `PROFIT_REVERSAL` \| `CAPITAL_LOSS` \| `CAPITAL_WITHDRAWAL` \| `PROFIT_WITHDRAWAL` \| `FEE` \| `ROUNDING_ADJUSTMENT` |
 | `direction` | ENUM | `CREDIT` \| `DEBIT` |
-| `amount_usd` | NUMERIC(18,2) | Always stored in USD |
+| `amount` | NUMERIC(18,2) | Amount of the entry |
+| `currency` | TEXT | Currency of entry, defaults to EUR |
 | `original_amount` | NUMERIC(18,2) | Client's original currency amount |
 | `original_currency` | TEXT | `USD` \| `EUR` \| `GBP` etc. |
 | `fx_rate` | NUMERIC(12,6) | Exchange rate at time of booking |
@@ -518,14 +520,14 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 -- Fast query: snapshot balance + only current month's new entries
 -- Never scans full history regardless of account age
 SELECT 
-  COALESCE(s.snapshot_balance_usd, 0) +
+  COALESCE(s.snapshot_balance, 0) +
   COALESCE((
-    SELECT SUM(CASE WHEN direction = 'CREDIT' THEN amount_usd ELSE -amount_usd END)
+    SELECT SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END)
     FROM ledger_entries
     WHERE investment_id = $1
       AND status = 'CONFIRMED'
       AND created_at >= date_trunc('month', NOW())
-  ), 0) AS current_balance_usd
+  ), 0) AS current_balance
 FROM monthly_balance_snapshots s
 WHERE s.investment_id = $1
 ORDER BY s.snapshot_month DESC
@@ -544,7 +546,8 @@ LIMIT 1;
 | `investment_id` | UUID FK | |
 | `user_id` | UUID FK | |
 | `snapshot_month` | DATE | First day of the month e.g. `2025-01-01` |
-| `snapshot_balance_usd` | NUMERIC(18,2) | Confirmed balance as of end of previous month |
+| `snapshot_balance` | NUMERIC(18,2) | Confirmed balance as of end of previous month |
+| `currency` | TEXT | Currency of snapshot, defaults to EUR |
 | `created_at` | TIMESTAMPTZ | When snapshot was taken |
 
 ---
@@ -598,7 +601,7 @@ ALTER TABLE pools ADD CONSTRAINT pool_capacity_check
   CHECK (current_transaction_count <= max_transactions);
 
 -- Application-level row lock before reading capacity
--- Prevents two simultaneous webhooks both seeing "1 slot available"
+-- Prevents two simultaneous requests both seeing "1 slot available"
 SELECT * FROM pools WHERE id = $1 FOR UPDATE;
 -- Second concurrent request waits here until first commits or rolls back
 ```
@@ -619,7 +622,8 @@ SELECT * FROM pools WHERE id = $1 FOR UPDATE;
 | `investment_id` | UUID FK → investments | The investment this allocation belongs to |
 | `pool_id` | UUID FK → pools | Which pool this slice went into |
 | `owned_by_admin_id` | UUID FK → admins | Which Pool Manager owns this slice |
-| `amount_usd` | NUMERIC(18,2) | Dollar amount allocated to this pool |
+| `amount` | NUMERIC(18,2) | Amount allocated to this pool |
+| `currency` | TEXT | Currency of allocation, defaults to EUR |
 | `percentage` | NUMERIC(5,2) | % of investment total e.g. 60.00 — all allocations for one investment must sum to 100 |
 | `status` | ENUM | `ACTIVE` \| `PARTIALLY_WITHDRAWN` \| `FULLY_WITHDRAWN` |
 | `allocated_at` | TIMESTAMPTZ | When allocation was confirmed |
@@ -646,7 +650,8 @@ investment_id: INV-456A (HIGH risk, $100K total)
 | `user_id` | UUID FK | |
 | `investment_id` | UUID FK | |
 | `type` | ENUM | `PROFIT` \| `CAPITAL` |
-| `amount_requested_usd` | NUMERIC(18,2) | Must be ≥ minimum_capital_floor for capital type |
+| `amount_requested` | NUMERIC(18,2) | Must be ≥ minimum_capital_floor for capital type |
+| `currency` | TEXT | Currency of request, defaults to EUR |
 | `notice_days` | INTEGER | 15 \| 30 \| 45 — set from config at request time |
 | `status` | ENUM | `SUBMITTED` \| `NOTICE_PERIOD` \| `READY_FOR_APPROVAL` \| `TASKS_PENDING` \| `TASKS_COMPLETE` \| `COMPLETED` \| `CANCELLED` |
 | `notice_start_date` | DATE | |
@@ -669,7 +674,8 @@ investment_id: INV-456A (HIGH risk, $100K total)
 | `withdrawal_request_id` | UUID FK → withdrawal_requests | Parent withdrawal |
 | `pool_id` | UUID FK → pools | Which pool this task sources funds from |
 | `admin_id` | UUID FK → admins | Pool Manager responsible for this task |
-| `amount_usd` | NUMERIC(18,2) | Amount to be sourced from this specific pool |
+| `amount` | NUMERIC(18,2) | Amount to be sourced from this specific pool |
+| `currency` | TEXT | Currency of task, defaults to EUR |
 | `percentage` | NUMERIC(5,2) | % of total withdrawal this task covers |
 | `status` | ENUM | `PENDING` \| `ADMIN_APPROVED` \| `TRANSFER_DONE` \| `FAILED` |
 | `failure_reason` | TEXT | Bank rejection reason — populated when status = FAILED |
@@ -1127,7 +1133,7 @@ Pools are displayed grouped by risk profile (colour-coded), then by owner admin:
 
 When a client deposits $50K with 100% MEDIUM risk:
 
-1. Bank webhook fires → Payment Module creates `ledger_entry` with `status=PENDING`
+1. Bank polling detects transaction → Payment Module creates `ledger_entry` with `status=PENDING`
 2. System parses reference → identifies user + investment
 3. Admin (POOL_MANAGER) sees in their pending deposits queue:
    - Tx ID, Amount: $50,000, Risk: MEDIUM, User: John Smith
@@ -1145,7 +1151,7 @@ When a client deposits $50K with 100% MEDIUM risk:
 
 When a client deposits $100K split 40% HIGH / 30% MEDIUM / 30% LOW:
 
-1. Bank webhook fires → one bank transaction arrives for $100K
+1. Bank polling detects transaction → one bank transaction arrives for €100K
 2. System parses reference → finds investment group with 3 risk slices:
    - INV-456A: HIGH 40% = $40,000
    - INV-456B: MEDIUM 30% = $30,000
@@ -1227,16 +1233,16 @@ To eliminate manual error and scaling bottlenecks, Pool Managers never calculate
 1. Admin navigates to pool → clicks **"Enter Profit/Outcome"**
 2. Enters: Month/Period (e.g., May 2026) and the outcome using one of two options:
    - **Option A (Rate-Based)**: Return percentage rate (e.g., `+1.25%` or `-0.50%`).
-   - **Option B (Amount-Based)**: Total pool profit/loss in USD (e.g., `$15,000` or `-$5,000`).
+   - **Option B (Amount-Based)**: Total pool profit/loss (e.g., `$15,000` or `-$5,000`).
 3. **Confirmation gate for large amounts:** If the absolute profit figure exceeds a configurable threshold (e.g., $50,000), the system shows a hard stop: *"You are about to book $X in profit to N investors. Type the amount to confirm."* The admin must retype the exact figure.
 4. Clicks **"Calculate Distribution"**
 5. **System Automated Calculations**:
    - **For Rate-Based Inputs**: The system multiplies the rate by each active allocation's deployed capital:
-     $$\text{lot\_profit} = \text{lot\_amount\_usd} \times \text{return\_rate}$$
+     $$\text{lot\_profit} = \text{lot\_amount} \times \text{return\_rate}$$
    - **For Amount-Based Inputs**: The system automatically divides the total profit proportionally using the **Largest Remainder Method** to resolve the penny rounding problem:
      ```
      Step 1: Calculate raw share per lot allocation:
-       lot_profit_raw = (lot_amount_usd / pool_total_capital) × pool_total_profit
+       lot_profit_raw = (lot_amount / pool_total_capital) × pool_total_profit
 
      Step 2: Floor each share to 2 decimal places:
        lot_profit_floored = FLOOR(lot_profit_raw × 100) / 100
@@ -1518,8 +1524,6 @@ V1 operates in **EUR only**. All ledger amounts, profit calculations, and withdr
 
 **Fix:** Largest Remainder Method. Raw shares floored to 2 decimal places. Remaining cents distributed one at a time to users ranked by fractional loss, oldest investor as tiebreaker. Total always equals exactly the input profit. `ROUNDING_ADJUSTMENT` ledger entry provides audit trail. See Section 9.5.
 
----
-
 ### Fix 2 — Transactional Outbox Pattern (Dual-Write Problem)
 
 **Problem:** Writing a ledger entry to PostgreSQL then publishing to a queue are two separate operations. App crash between them = money recorded, workflow dead. Admin never notified, investment never activated.
@@ -1528,17 +1532,13 @@ V1 operates in **EUR only**. All ledger amounts, profit calculations, and withdr
 
 **Fix:** Outbox pattern. Every event written to `outbox_events` table **in the same DB transaction** as the ledger entry. Separate Go outbox worker polls and enqueues to River. App crash = worker picks it up on restart. Zero financial events ever lost. See Section 3.4.
 
----
-
 ### Fix 3 — Pool Capacity Race Condition
 
-**Problem:** Two simultaneous webhooks for a pool with one slot remaining both read capacity as available, both map — pool exceeds `max_transactions`.
+**Problem:** Two simultaneous mapping requests for a pool with one slot remaining both read capacity as available, both map — pool exceeds `max_transactions`.
 
 **Why it matters:** Pool integrity broken. More clients mapped than the trading account supports.
 
 **Fix:** `SELECT ... FOR UPDATE` row lock at application level + `CHECK (current_transaction_count <= max_transactions)` hard constraint at DB level. Two-layer enforcement. See Section 6 pools table.
-
----
 
 ### Fix 4 — Encryption Key Management
 
@@ -1548,8 +1548,6 @@ V1 operates in **EUR only**. All ledger amounts, profit calculations, and withdr
 
 **Fix:** Doppler — secrets injected at runtime, never visible in any dashboard, full audit log. Docker environment variables used only for non-sensitive config (port numbers, log levels). AES-256 key lives in Doppler only. Migration to AWS KMS at V3.
 
----
-
 ### Fix 5 — Unbounded Ledger Summation
 
 **Problem:** Balance derived by summing all `ledger_entries` for an investment. A 3-year-old account requires summing hundreds of rows on every dashboard load.
@@ -1557,8 +1555,6 @@ V1 operates in **EUR only**. All ledger amounts, profit calculations, and withdr
 **Why it matters:** Dashboard performance degrades with account age. Must be designed for now to avoid painful migration later.
 
 **Fix:** `monthly_balance_snapshots` table. Balance query sums only current month's entries + latest snapshot. Max scan is always ~31 days regardless of account age. See Section 6.
-
----
 
 ### Fix 6 — Go Channels (In-Memory Queue) Volatility for Financial Events
 
@@ -1711,18 +1707,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | U8 | Agreement Signing | After profile complete, forced scroll + checkbox confirm | ✅ |
 | U9 | Investment Configuration | Risk split + maturity period + view deposit instructions | ✅ |
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — U1/U2 branching sign up flow showing Individual vs Enterprise path divergence]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U3 sign in flow with session handling and redirect to dashboard]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U4 forgot password flow: enter email → receive link → reset → redirect to sign in]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U6/U7 profile setup form wireframe showing Individual vs Enterprise field differences]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U8 agreement scroll UI wireframe: scroll panel → checkbox activates at bottom → confirm button]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U9 investment configuration wireframe: amount category + risk split slider/inputs + maturity selector + deposit instructions panel]` -->
-
 ---
 
 ### 🟦 User Journeys — Active Investment Management
@@ -1736,12 +1720,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | U14 | Update Bank Details | User changes their withdrawal bank account | ✅ |
 | U15 | View Ledger History | Full history of deposits, profits, withdrawals for one investment | ✅ |
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — U10 empty state dashboard wireframe: onboarding checklist + deposit instructions + calculator + platform info]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U11 active dashboard wireframe: summary cards + investments table + allocation pie chart + maturity timeline]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U13 investment detail view: pool info + ledger history + profit chart + withdrawal CTA]` -->
-
 ---
 
 ### 🟦 User Journeys — Withdrawals
@@ -1752,14 +1730,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | U17 | Capital Withdrawal Request | User requests partial or full capital (minimum floor enforced) | ✅ |
 | U18 | Withdrawal Status Tracking | User tracks progress of a submitted withdrawal request | ✅ |
 | U19 | Cancel Withdrawal | User cancels a capital withdrawal during the notice period | ✅ |
-
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — U16 profit withdrawal flow: request → admin notified → admin approves → transfer initiated → completed]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U17 capital withdrawal flow with floor validation: enter amount → floor check → notice period starts → ready date → admin approves → transfer]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U17/U19 capital withdrawal state machine: SUBMITTED → NOTICE_PERIOD → READY_FOR_APPROVAL → ADMIN_APPROVED → TRANSFER_INITIATED → COMPLETED, with CANCELLED branch from NOTICE_PERIOD]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — U18 withdrawal tracker UI: status stepper showing current stage with timestamps]` -->
 
 ---
 
@@ -1773,10 +1743,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | A4 | View & Edit User Profile | Admin inspects any client's full profile and investment history | ✅ |
 | A5 | Suspend / Reactivate User Account | Admin locks or unlocks a client account | ✅ |
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — A1 admin sign in flow with 2FA (TOTP) step]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — A2 create admin flow: SUPER_ADMIN fills email + selects role → system sends invite email → new admin sets password]` -->
-
 ---
 
 ### 🟧 Admin Journeys — Pool Management
@@ -1788,10 +1754,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | A8 | Edit Pool Config | Admin updates max transactions or other pool settings | ✅ |
 | A9 | Close Pool | Admin closes a pool when maturity reached or capacity full | ✅ |
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — A6 create pool form wireframe: pool code + trading account selector + risk profile + maturity + max transactions]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — A7 pool detail view: transaction list + capital total + profit history + client count + action buttons]` -->
-
 ---
 
 ### 🟧 Admin Journeys — Transaction & Deposit Handling
@@ -1802,10 +1764,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | A11 | Map Transaction → New Pool | Inbound deposit arrives, admin creates pool inline then maps | ✅ |
 | A12 | Handle Unmatched Deposit | Deposit arrives with no recognisable client reference — admin investigates manually | ✅ |
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — A10/A11 transaction mapping flow: pending deposits list → select transaction → map to pool (existing or new) → confirm → ledger updates → client notified]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — A12 unmatched deposit handling: admin flags as unmatched → investigation note → resolve or return funds]` -->
-
 ---
 
 ### 🟧 Admin Journeys — Profit Management
@@ -1815,8 +1773,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | A13 | Enter Pool Profit | Admin inputs total profit earned by a pool for a period | ✅ |
 | A14 | Review Profit Distribution Preview | Before confirming, admin sees per-user breakdown with amounts | ✅ |
 | A15 | Confirm & Book Profit | Admin confirms distribution → system writes ledger entries per user | ✅ |
-
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — A13/A14/A15 profit entry flow: enter total → preview table (user / capital / % share / profit allocated) → confirm → ledger entries created → client dashboards updated]` -->
 
 ---
 
@@ -1831,11 +1787,9 @@ This section maps every journey that exists in the platform — user-facing, adm
 | A24 | Reassign Pool Ownership | SUPER_ADMIN transfers a pool from one Pool Manager to another | ✅ |
 | A25 | View Investment Allocation Split | SUPER_ADMIN drills into any investment to see which pools and admins hold which slice | ✅ |
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — A20 SUPER_ADMIN monitoring panel wireframe: all admins listed with their pool health bars, AUM, and pending tasks per admin]`
-
-`[TEAMMATE: ADD DIAGRAM HERE — A22/A23 withdrawal task override flow: SUPER_ADMIN sees delayed task → nudge notification sent → if still unresolved → SUPER_ADMIN direct override approval]` -->
-
 ---
+
+### 🟧 Admin Journeys — Withdrawals & Reports
 
 | # | Journey | Trigger | V1 |
 |---|---|---|---|
@@ -1843,8 +1797,6 @@ This section maps every journey that exists in the platform — user-facing, adm
 | A17 | Review Capital Withdrawal Request | Notice period ends, admin checks pool liquidity and approves | ✅ |
 | A18 | Record Outgoing Transfer Reference | After bank transfer done manually, admin pastes reference into system | ✅ |
 | A19 | Export Report | Admin exports pool summary, user holdings, or ledger as CSV/PDF | ✅ |
-<!-- 
-`[TEAMMATE: ADD DIAGRAM HERE — A16/A17 withdrawal approval flow: withdrawal queue → select request → review details → approve → record transfer ref → status updated → client notified]` -->
 
 ---
 
@@ -1854,7 +1806,7 @@ These run automatically with no human trigger. They must be designed, built, and
 
 | # | Journey | Schedule / Trigger | V1 |
 |---|---|---|---|
-| S1 | Bank Webhook — Inbound Deposit | Fires when bank receives a new credit to the Irish account | ✅ |
+| S1 | Bank Polling — Inbound Deposit | Detects when bank receives a new credit to the Irish account | ✅ |
 | S2 | Maturity Check Cron | Runs daily 00:01 UTC — finds active investments maturing today, automatically releases accrued dividends to liquid profit, and sets status to MATURED | ✅ |
 | S3 | Notice Period Check Cron | Runs daily 00:01 UTC — finds withdrawals where `ready_date = today` | ✅ |
 | S4 | Monthly Summary Email Cron | Runs 1st of every month 08:00 UTC — sends performance summary to all ACTIVE clients | ✅ |
@@ -1877,7 +1829,7 @@ Runs automatically daily at 00:01 UTC. It performs the **entire dividend payout 
 2. **Sum Accrued Dividends**:
    For each maturing investment found, the cron sums up all monthly accrued dividends (credits minus debits):
    ```sql
-   SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount_usd ELSE -amount_usd END), 0.00)
+    SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0.00)
    FROM core.ledger_entries 
    WHERE investment_id = :investment_id AND entry_type = 'ACCRUED_DIVIDEND' AND status = 'CONFIRMED';
    ```
@@ -1895,13 +1847,11 @@ Runs automatically daily at 00:01 UTC. It performs the **entire dividend payout 
    The Go River worker picks up the `MATURITY_REACHED` event and emails the client:
    *"Your investment has matured! Deployed capital and accrued dividends are now fully liquid and withdrawable in your dashboard. Login to request transfer."*
 
-<!-- `[TEAMMATE: ADD DIAGRAM HERE — S1 bank webhook sequence: bank fires webhook → Payment Module creates PENDING ledger entry → SQS event → Notification Module emails admin]`
+<!-- `[TEAMMATE: ADD DIAGRAM HERE — S1 bank polling sequence: bank polling detects transaction → Payment Module creates PENDING ledger entry → SQS event → Notification Module emails admin]` -->
 
 `[TEAMMATE: ADD DIAGRAM HERE — S2 maturity cron sequence: cron triggers → query investments where maturity_date = today → update status to MATURED → SQS event → email each affected client]`
 
 `[TEAMMATE: ADD DIAGRAM HERE — S3 notice period cron: query withdrawal_requests where ready_date = today AND status = NOTICE_PERIOD → update to READY_FOR_APPROVAL → email admin]` -->
-
----
 <!-- 
 ### Journey Count Summary
 
@@ -1927,7 +1877,7 @@ Build diagrams in this order — these are the journeys the CEO will walk throug
 
 | Priority | Journey | Type |
 |---|---|---|
-| 1 | S1 — Bank webhook → ledger → admin notification | Sequence diagram |
+| 1 | S1 — Bank polling → ledger → admin notification | Sequence diagram |
 | 2 | U1/U2 — Sign up Individual vs Enterprise | Flow diagram |
 | 3 | U9 — Investment configuration + risk split | Wireframe |
 | 4 | A10/A11 — Transaction mapping | Flow diagram |
@@ -1979,7 +1929,7 @@ Section 9.2 — SUPER_ADMIN dashboard wireframe with pool health panel
 Section 9.2 — POOL_MANAGER scoped dashboard wireframe
 Section 9.3 — Pool list view with colour-coded risk grouping
 Section 9.3 — Pool detail view wireframe
-Section 17 (S1) — Bank webhook sequence diagram
+Section 17 (S1) — Bank polling sequence diagram
 Section 17 (S2) — Maturity cron sequence
 Section 17 (S3) — Notice period cron flow
  -->

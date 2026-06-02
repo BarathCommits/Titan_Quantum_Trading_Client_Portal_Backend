@@ -258,7 +258,8 @@ Represents a single client investment contract. One user can hold multiple inves
 | `start_date` | DATE | Yes | **Null until deposit is confirmed.** Set to the mapping date. |
 | `maturity_date` | DATE | Yes | **Null until deposit is confirmed.** Computed as `start_date + maturity_months`. |
 | `status` | ENUM | No | Lifecycle stage of this investment. |
-| `minimum_capital_floor_usd` | NUMERIC(18,2) | No | The minimum capital that must remain in the investment. Default: 5,000. Admin-adjustable. Waived on full exit. |
+| `minimum_capital_floor` | NUMERIC(18,2) | No | The minimum capital that must remain in the investment. Default: 5,000. Admin-adjustable. Waived on full exit. |
+| `currency` | TEXT | No | Default `EUR`. The currency for the minimum capital floor. |
 | `created_at` | TIMESTAMPTZ | No | Immutable. |
 | `updated_at` | TIMESTAMPTZ | No | Auto-updated by trigger. |
 
@@ -289,16 +290,17 @@ Stores the risk split percentages for investments that are not 100% in a single 
 | `investment_id` | UUID → investments | No | The parent investment this split belongs to. Cascades delete. |
 | `risk_profile` | ENUM | No | Which risk profile this slice represents. |
 | `percentage` | NUMERIC(5,2) | No | The percentage of the total deposit going to this risk. e.g. `40.00`. All slices for one investment must sum to 100. |
-| `amount_usd` | NUMERIC(18,2) | No | Computed: `percentage × total_deposit / 100`. The actual dollar amount for this slice. |
+| `amount` | NUMERIC(18,2) | No | Computed: `percentage × total_deposit / 100`. The actual base currency value for this slice. |
+| `currency` | TEXT | No | Default `EUR`. The currency in which the split amount is denominated. |
 | `created_at` | TIMESTAMPTZ | No | Immutable. |
 
-### Example: $100,000 deposit with 40/30/30 split
+### Example: €100,000 deposit with 40/30/30 split
 
 ```
 investment_id: INV-456 (parent)
-  Row 1: risk_profile=HIGH,   percentage=40.00, amount_usd=40000.00
-  Row 2: risk_profile=MEDIUM, percentage=30.00, amount_usd=30000.00
-  Row 3: risk_profile=LOW,    percentage=30.00, amount_usd=30000.00
+  Row 1: risk_profile=HIGH,   percentage=40.00, amount=40000.00
+  Row 2: risk_profile=MEDIUM, percentage=30.00, amount=30000.00
+  Row 3: risk_profile=LOW,    percentage=30.00, amount=30000.00
 ```
 
 Three corresponding `investments` rows are created. Each is tracked independently in the ledger.
@@ -315,7 +317,8 @@ The core multi-admin tracking table. When an investment (or risk slice) is alloc
 | `investment_id` | UUID → investments | No | Which investment is being allocated. |
 | `pool_id` | UUID → pools | No | Which pool it is going into. |
 | `owned_by_admin_id` | UUID → admins | No | Which Pool Manager owns this slice. Determines who sees it and who handles withdrawals. |
-| `amount_usd` | NUMERIC(18,2) | No | Dollar amount allocated to this pool. |
+| `amount` | NUMERIC(18,2) | No | Base currency value allocated to this pool. |
+| `currency` | TEXT | No | Default `EUR`. The currency in which the pool allocation is denominated. |
 | `percentage` | NUMERIC(5,2) | No | Percentage of the investment total. All rows for one investment must sum to 100. |
 | `status` | ENUM | No | Tracks withdrawal state for this specific slice. |
 | `allocated_at` | TIMESTAMPTZ | No | When the allocation was confirmed. |
@@ -331,12 +334,12 @@ The core multi-admin tracking table. When an investment (or risk slice) is alloc
 | `PARTIALLY_WITHDRAWN` | Some capital has been returned via a withdrawal |
 | `FULLY_WITHDRAWN` | All capital from this slice has been returned |
 
-### Example: $100,000 investment across two admins
+### Example: €100,000 investment across two admins
 
 ```
 investment_id: INV-456A (HIGH risk)
-  Row 1: pool=ACCA-HIGH-001, owned_by=Admin-1, amount=$60,000, pct=60%
-  Row 2: pool=ACCB-HIGH-001, owned_by=Admin-2, amount=$40,000, pct=40%
+  Row 1: pool=ACCA-HIGH-001, owned_by=Admin-1, amount=€60,000, pct=60%
+  Row 2: pool=ACCB-HIGH-001, owned_by=Admin-2, amount=€40,000, pct=40%
 ```
 
 Admin 1 sees only Row 1. Admin 2 sees only Row 2. SUPER_ADMIN sees both.
@@ -355,9 +358,10 @@ Admin 1 sees only Row 1. Admin 2 sees only Row 2. SUPER_ADMIN sees both.
 | `pool_id` | UUID → pools | Yes | Which pool this entry relates to. |
 | `entry_type` | ENUM | No | The specific type of financial event. |
 | `direction` | ENUM | No | `CREDIT` (money in) or `DEBIT` (money out). |
-| `amount_usd` | NUMERIC(18,2) | No | Always stored in EUR for V1. Field name reflects the canonical currency column. |
-| `original_amount` | NUMERIC(18,2) | No | The amount in the client's original currency. Same as `amount_usd` in V1 (EUR only). |
-| `original_currency` | TEXT (3 chars) | No | ISO 4217 currency code. `EUR` for all V1 transactions. |
+| `amount` | NUMERIC(18,2) | No | Base currency value of this ledger transaction. Represented in platform base currency. |
+| `currency` | TEXT | No | Default `EUR`. The platform base currency at the time of booking. |
+| `original_amount` | NUMERIC(18,2) | No | The amount in the client's original currency. Same as `amount` in V1 (EUR only). |
+| `original_currency` | TEXT (3 chars) | No | ISO 4217 currency code of the original wire. `EUR` for all V1 transactions. |
 | `fx_rate` | NUMERIC(12,6) | No | Exchange rate at time of booking. `1.000000` for V1. Ready for multi-currency V2. |
 | `reference_id` | TEXT | No | **Unique.** External bank transaction ID or system-generated idempotency key. Prevents duplicate processing. |
 | `status` | ENUM | No | Processing state of this entry. |
@@ -434,16 +438,29 @@ Closing balances captured on the 1st of every month. These are the performance a
 | `investment_id` | UUID → investments | No | Which investment this snapshot is for. |
 | `user_id` | UUID → users | No | Denormalised for query efficiency. |
 | `snapshot_month` | DATE | No | The first day of the month. e.g. `2025-01-01`. Constrained to always be a month-start date. Unique per investment per month. |
-| `snapshot_balance_usd` | NUMERIC(18,2) | No | The total CONFIRMED balance as of the last day of the previous month. |
+| `snapshot_balance` | NUMERIC(18,2) | No | The total CONFIRMED balance as of the last day of the previous month. |
+| `currency` | TEXT | No | Default `EUR`. The currency in which the snapshots are denominated. |
 | `created_at` | TIMESTAMPTZ | No | Immutable. When the snapshot was taken. |
 
 ### Monthly Cron Sequencing
 
 These snapshots are created by a Go River cron job at **00:01 UTC on the 1st of every month**. The monthly summary email job runs at **08:00 UTC** on the same day. The email job must never run before the snapshot job completes. If the snapshot job fails, the email job is blocked and a SUPER_ADMIN alert fires.
 
+## Table 11: `core.notice_period_config`
+
+Stores the valid notice period configurations for withdrawal requests, allowing dynamic adjustment of tiers (e.g. 15, 30, 45 days) by the CEO without altering the database schema.
+
+| Field | Type | Nullable | Description |
+|---|---|---|---|
+| `id` | UUID | No | Primary key. |
+| `notice_days` | INTEGER | No | Unique. The length of the notice period in days. Used as a FK validation target by `withdrawal_requests`. |
+| `label` | TEXT | No | Human-readable label for display, e.g. `Standard (15 days)`. |
+| `is_active` | BOOLEAN | No | Inactive configs cannot be chosen for new withdrawal requests. |
+| `created_at` | TIMESTAMPTZ | No | Immutable. |
+
 ---
 
-## Table 11: `core.withdrawal_requests`
+## Table 12: `core.withdrawal_requests`
 
 Created when a client submits a withdrawal request. One record per withdrawal request regardless of how many pools are involved.
 
@@ -453,8 +470,9 @@ Created when a client submits a withdrawal request. One record per withdrawal re
 | `user_id` | UUID → users | No | The client requesting withdrawal. |
 | `investment_id` | UUID → investments | No | Which investment is being withdrawn from. |
 | `type` | ENUM | No | `PROFIT` or `CAPITAL`. Determines which flow applies. |
-| `amount_requested_usd` | NUMERIC(18,2) | No | The amount the client wants. Validated against capital floor for CAPITAL type. |
-| `notice_days` | INTEGER | No | `15`, `30`, or `45`. The notice period for this withdrawal. Set at request time from config. |
+| `amount_requested` | NUMERIC(18,2) | No | The amount the client wants. Validated against capital floor for CAPITAL type. |
+| `currency` | TEXT | No | Default `EUR`. The currency in which the withdrawal is requested. |
+| `notice_days` | INTEGER | No | References core.notice_period_config(notice_days). The notice period in days for this withdrawal. |
 | `status` | ENUM | No | The current stage in the withdrawal lifecycle. |
 | `notice_start_date` | DATE | Yes | Set when status moves to `NOTICE_PERIOD`. |
 | `ready_date` | DATE | Yes | Computed: `notice_start_date + notice_days`. The daily cron checks this field. |
@@ -496,7 +514,7 @@ Note: PROFIT withdrawals skip NOTICE_PERIOD for profit amounts.
 
 ---
 
-## Table 12: `core.withdrawal_tasks`
+## Table 13: `core.withdrawal_tasks`
 
 One row per pool involved in a withdrawal. When a client's investment spans multiple admin-owned pools, the system auto-generates one task per pool. Each admin sees only their own task.
 
@@ -506,7 +524,8 @@ One row per pool involved in a withdrawal. When a client's investment spans mult
 | `withdrawal_request_id` | UUID → withdrawal_requests | No | The parent request this task belongs to. Cascades delete. |
 | `pool_id` | UUID → pools | No | Which pool this task sources funds from. |
 | `admin_id` | UUID → admins | No | The Pool Manager responsible for this task. |
-| `amount_usd` | NUMERIC(18,2) | No | The amount this admin must source from their pool. |
+| `amount` | NUMERIC(18,2) | No | The amount this admin must source from their pool. |
+| `currency` | TEXT | No | Default `EUR`. The currency in which this task amount is denominated. |
 | `percentage` | NUMERIC(5,2) | No | Their percentage of the total withdrawal. All tasks for one request sum to 100. |
 | `status` | ENUM | No | The current state of this individual task. |
 | `failure_reason` | TEXT | Yes | Populated when status = `FAILED`. e.g. "Bank rejected IBAN — account closed". |
@@ -531,7 +550,7 @@ The `withdrawal_request.status` moves from `TASKS_PENDING` to `TASKS_COMPLETE` o
 
 ---
 
-## Table 13: `core.outbox_events`
+## Table 14: `core.outbox_events`
 
 Stores events that need to trigger downstream actions (emails, notifications, queue jobs). Written in the same database transaction as the ledger entry. Picked up by the Go outbox worker every second.
 
@@ -558,7 +577,7 @@ A partial index on `(created_at) WHERE published = false` makes the poll query i
 
 ---
 
-## Table 14: `core.audit_log`
+## Table 15: `core.audit_log`
 
 Immutable record of every significant action taken by any admin, user, or system process. Append-only like the ledger.
 
@@ -589,7 +608,7 @@ Immutable record of every significant action taken by any admin, user, or system
 
 ---
 
-## Table 15: `payments.bank_transactions`
+## Table 16: `payments.bank_transactions`
 
 Records every bank transaction pulled from the Bank of Ireland AIS (Account Information Service) API. This table is in the `payments` schema, owned exclusively by the Go Payments Service. It has no physical foreign key to any `core` table.
 
@@ -843,10 +862,12 @@ A quick reference to the database-enforced rules that protect data integrity:
 | `UNIQUE (bank_reference_id)` | `payments.bank_transactions` | BOI polling cannot create duplicate records |
 | `CHECK (snapshot_month = date_trunc('month', snapshot_month))` | `monthly_balance_snapshots` | Snapshots must always be the first day of a month |
 | `CHECK (maturity_months IN (6, 12, 24))` | `investments`, `pools` | Only valid maturity periods |
-| `CHECK (notice_days IN (15, 30, 45))` | `withdrawal_requests` | Valid notice periods — **V2 plan: move to config table so CEO can adjust tiers without schema migration** |
+| FK Reference (notice_days) | `withdrawal_requests` | Validates that notice period matches an active record in `notice_period_config` table (Issue 6 Fix) |
 | TRIGGER: `enforce_ledger_append_only` | `ledger_entries` | Blocks all UPDATE and DELETE at engine level — cannot be bypassed by any code path |
-| TRIGGER: `enforce_risk_splits_sum` *(P0 fix)* | `investment_risk_splits` | Blocks any insert or update that would make percentages exceed 100% for one investment |
-| TRIGGER: `enforce_withdrawal_tasks_sum` *(P0 fix)* | `withdrawal_tasks` | Blocks any insert or update that would make task percentages exceed 100% for one request |
+| TRIGGER: `enforce_risk_splits_sum` | `investment_risk_splits` | Mid-transaction check: blocks split updates/inserts exceeding 100% |
+| TRIGGER: `enforce_risk_splits_complete` | `investment_risk_splits` | Commit-time deferred check: enforces splits sum to exactly 100% (Issue 1 Fix) |
+| TRIGGER: `enforce_withdrawal_tasks_sum` | `withdrawal_tasks` | Mid-transaction check: blocks task updates/inserts exceeding 100% |
+| TRIGGER: `enforce_withdrawal_tasks_complete` | `withdrawal_tasks` | Commit-time deferred check: enforces tasks sum to exactly 100% (Issue 2 Fix) |
 | TRIGGER: auto-update `updated_at` | All mutable tables | Timestamps always reflect last change |
 
 ---
@@ -856,7 +877,7 @@ A quick reference to the database-enforced rules that protect data integrity:
 | Index | Type | Purpose |
 |---|---|---|
 | All FK columns | B-Tree | Eliminates full scans on parent cascades and joins |
-| `ledger_entries(investment_id, status, created_at) INCLUDE (amount_usd, direction)` | Covered index | Balance calculations never touch the heap — Index-Only Scan |
+| `ledger_entries(investment_id, status, created_at) INCLUDE (amount, direction)` | Covered index | Balance calculations never touch the heap — Index-Only Scan |
 | `monthly_balance_snapshots(investment_id, snapshot_month DESC)` | Composite descending | Latest snapshot lookup in under 1ms |
 | `outbox_events(created_at) WHERE published = false` | Partial index | Outbox worker poll stays fast as historical rows accumulate |
 | `bank_transactions(status, bank_reference_id) INCLUDE (amount_eur, value_date)` | Covered index | Reconciliation queries without heap fetch |
