@@ -14,33 +14,19 @@ This file provides build, test, run commands, and critical architectural rules f
 
 ---
 
-## 2. Common Development Commands
+## 2. Development Commands & Rulebooks
 
-### 2.1 Multi-Service Dev Environment (Docker Compose)
+For directory-specific builds, runs, tests, and styles, refer to the local `CLAUDE.md` configuration files inside `/backend-core` and `/backend-payments`.
+
+### 2.1 Parent Environment (Docker Compose at Root)
 * **Start all services:** `docker compose up --build`
 * **Stop all services:** `docker compose down -v`
-* **View logs:** `docker compose logs -f`
+* **View orchestration logs:** `docker compose logs -f`
 
-### 2.2 NestJS Core Backend (Port 3000)
-* **Install dependencies:** `npm install`
-* **Start in development (auto-reload):** `npm run start:dev`
-* **Build production package:** `npm run build`
-* **Run unit tests:** `npm run test`
-* **Run integration tests:** `npm run test:e2e`
-* **Format code:** `npm run format`
-
-### 2.3 Go Payments & Notifications (Port 3003)
-* **Install dependencies:** `go mod download`
-* **Start in development:** `go run cmd/main.go`
-* **Build production binary:** `go build -o bin/payments cmd/main.go`
-* **Run tests:** `go test -v ./...`
-* **Format code:** `go fmt ./...`
-
-### 2.4 Next.js Frontend UI (Port 3001)
-* **Install dependencies:** `npm install`
-* **Start in development:** `npm run dev`
-* **Build production app:** `npm run build`
-* **Linter check:** `npm run lint`
+### 2.2 Sub-Directory Reference Guides
+* **NestJS Core Backend:** Located in [backend-core/CLAUDE.md](file:///Users/balajisk/Downloads/titan/backend-core/CLAUDE.md)
+* **Go Payments & Notifications:** Located in [backend-payments/CLAUDE.md](file:///Users/balajisk/Downloads/titan/backend-payments/CLAUDE.md)
+* **Frontend UI (Next.js):** Out of scope for this repository (living in `titan-frontend` repository).
 
 ---
 
