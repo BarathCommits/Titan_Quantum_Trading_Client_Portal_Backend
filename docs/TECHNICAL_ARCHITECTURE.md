@@ -751,7 +751,7 @@ CREATE TABLE core.investments (
     start_date DATE,
     maturity_date DATE,
     status core.investment_status NOT NULL DEFAULT 'PENDING_DEPOSIT',
-    minimum_capital_floor NUMERIC(18,2) NOT NULL DEFAULT 5000.00 CHECK (minimum_capital_floor >= 0.00),
+    minimum_capital_floor NUMERIC(18,4) NOT NULL DEFAULT 5000.0000 CHECK (minimum_capital_floor >= 0.0000),
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Multi-currency V1/V2 design
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -766,7 +766,7 @@ CREATE TABLE core.investment_risk_splits (
     investment_id UUID NOT NULL REFERENCES core.investments(id) ON DELETE CASCADE,
     risk_profile core.risk_profile NOT NULL,
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
-    amount NUMERIC(18,2) NOT NULL CHECK (amount >= 0.00),
+    amount NUMERIC(18,4) NOT NULL CHECK (amount >= 0.0000),
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -779,7 +779,7 @@ CREATE TABLE core.investment_pool_allocations (
     investment_id UUID NOT NULL REFERENCES core.investments(id),
     pool_id UUID NOT NULL REFERENCES core.pools(id),
     owned_by_admin_id UUID NOT NULL REFERENCES core.admins(id),
-    amount NUMERIC(18,2) NOT NULL CHECK (amount > 0.00),
+    amount NUMERIC(18,4) NOT NULL CHECK (amount > 0.0000),
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
     status core.allocation_status NOT NULL DEFAULT 'ACTIVE',
@@ -797,9 +797,9 @@ CREATE TABLE core.ledger_entries (
     pool_id UUID REFERENCES core.pools(id),
     entry_type core.ledger_entry_type NOT NULL,
     direction core.ledger_direction NOT NULL,
-    amount NUMERIC(18,2) NOT NULL CHECK (amount >= 0.00),
+    amount NUMERIC(18,4) NOT NULL CHECK (amount >= 0.0000),
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
-    original_amount NUMERIC(18,2) NOT NULL CHECK (original_amount >= 0.00),
+    original_amount NUMERIC(18,4) NOT NULL CHECK (original_amount >= 0.0000),
     original_currency TEXT NOT NULL CHECK (length(original_currency) = 3),
     fx_rate NUMERIC(12,6) NOT NULL DEFAULT 1.000000 CHECK (fx_rate > 0),
     reference_id TEXT UNIQUE NOT NULL, -- External txn ID or unique system reference (Idempotency key)
@@ -816,7 +816,7 @@ CREATE TABLE core.monthly_balance_snapshots (
     investment_id UUID NOT NULL REFERENCES core.investments(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES core.users(id) ON DELETE CASCADE,
     snapshot_month DATE NOT NULL CHECK (snapshot_month = date_trunc('month', snapshot_month)::date),
-    snapshot_balance NUMERIC(18,2) NOT NULL,
+    snapshot_balance NUMERIC(18,4) NOT NULL,
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (investment_id, snapshot_month)
@@ -841,7 +841,7 @@ CREATE TABLE core.withdrawal_requests (
     user_id UUID NOT NULL REFERENCES core.users(id),
     investment_id UUID NOT NULL REFERENCES core.investments(id),
     type core.withdrawal_type NOT NULL,
-    amount_requested NUMERIC(18,2) NOT NULL CHECK (amount_requested > 0.00),
+    amount_requested NUMERIC(18,4) NOT NULL CHECK (amount_requested > 0.0000),
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     notice_days INTEGER NOT NULL REFERENCES core.notice_period_config(notice_days), -- FK reference replacing hardcoded CHECK
     status core.withdrawal_status NOT NULL DEFAULT 'SUBMITTED',
@@ -863,7 +863,7 @@ CREATE TABLE core.withdrawal_tasks (
     withdrawal_request_id UUID NOT NULL REFERENCES core.withdrawal_requests(id) ON DELETE CASCADE,
     pool_id UUID NOT NULL REFERENCES core.pools(id),
     admin_id UUID NOT NULL REFERENCES core.admins(id),
-    amount NUMERIC(18,2) NOT NULL CHECK (amount > 0.00),
+    amount NUMERIC(18,4) NOT NULL CHECK (amount > 0.0000),
     currency TEXT NOT NULL DEFAULT 'EUR' CHECK (length(currency) = 3), -- Neutral amount column structure
     percentage NUMERIC(5,2) NOT NULL CHECK (percentage > 0.00 AND percentage <= 100.00),
     status core.withdrawal_task_status NOT NULL DEFAULT 'PENDING',
@@ -909,7 +909,7 @@ COMMENT ON TABLE core.audit_log IS 'Immutable platform audit log recording modif
 CREATE TABLE payments.bank_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     bank_reference_id TEXT UNIQUE NOT NULL, -- Bank of Ireland unique transaction identifier
-    amount_eur NUMERIC(18,2) NOT NULL,
+    amount_eur NUMERIC(18,4) NOT NULL,
     remitter_name TEXT NOT NULL,
     remitter_iban TEXT NOT NULL,
     remitter_bic TEXT,

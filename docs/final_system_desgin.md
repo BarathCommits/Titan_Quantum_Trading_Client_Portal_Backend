@@ -472,7 +472,7 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 | `start_date` | DATE | Set when deposit confirmed |
 | `maturity_date` | DATE | Computed: start_date + maturity_months |
 | `status` | ENUM | `PENDING_DEPOSIT` \| `ACTIVE` \| `MATURED` \| `CLOSED` |
-| `minimum_capital_floor` | NUMERIC(18,2) | Admin-configurable per investment e.g. 5,000 |
+| `minimum_capital_floor` | NUMERIC(18,4) | Admin-configurable per investment e.g. 5,000 |
 
 ---
 
@@ -486,7 +486,7 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 | `investment_id` | UUID FK | Parent investment |
 | `risk_profile` | ENUM | `LOW` \| `MEDIUM` \| `HIGH` |
 | `percentage` | NUMERIC(5,2) | e.g. 40.00 — must sum to 100 across splits |
-| `amount` | NUMERIC(18,2) | Computed from percentage × total deposit |
+| `amount` | NUMERIC(18,4) | Computed from percentage × total deposit |
 | `currency` | TEXT | Currency of split, defaults to EUR |
 
 ---
@@ -503,9 +503,9 @@ The platform is **multi-tenant**. A `tenant_id` column exists on every user-owne
 | `pool_id` | UUID FK | |
 | `entry_type` | ENUM | `DEPOSIT` \| `PROFIT_ALLOCATION` \| `PROFIT_REVERSAL` \| `CAPITAL_LOSS` \| `CAPITAL_WITHDRAWAL` \| `PROFIT_WITHDRAWAL` \| `FEE` \| `ROUNDING_ADJUSTMENT` |
 | `direction` | ENUM | `CREDIT` \| `DEBIT` |
-| `amount` | NUMERIC(18,2) | Amount of the entry |
+| `amount` | NUMERIC(18,4) | Amount of the entry |
 | `currency` | TEXT | Currency of entry, defaults to EUR |
-| `original_amount` | NUMERIC(18,2) | Client's original currency amount |
+| `original_amount` | NUMERIC(18,4) | Client's original currency amount |
 | `original_currency` | TEXT | `USD` \| `EUR` \| `GBP` etc. |
 | `fx_rate` | NUMERIC(12,6) | Exchange rate at time of booking |
 | `reference_id` | TEXT UNIQUE | Bank transaction ID — idempotency key |
@@ -546,7 +546,7 @@ LIMIT 1;
 | `investment_id` | UUID FK | |
 | `user_id` | UUID FK | |
 | `snapshot_month` | DATE | First day of the month e.g. `2025-01-01` |
-| `snapshot_balance` | NUMERIC(18,2) | Confirmed balance as of end of previous month |
+| `snapshot_balance` | NUMERIC(18,4) | Confirmed balance as of end of previous month |
 | `currency` | TEXT | Currency of snapshot, defaults to EUR |
 | `created_at` | TIMESTAMPTZ | When snapshot was taken |
 
@@ -622,7 +622,7 @@ SELECT * FROM pools WHERE id = $1 FOR UPDATE;
 | `investment_id` | UUID FK → investments | The investment this allocation belongs to |
 | `pool_id` | UUID FK → pools | Which pool this slice went into |
 | `owned_by_admin_id` | UUID FK → admins | Which Pool Manager owns this slice |
-| `amount` | NUMERIC(18,2) | Amount allocated to this pool |
+| `amount` | NUMERIC(18,4) | Amount allocated to this pool |
 | `currency` | TEXT | Currency of allocation, defaults to EUR |
 | `percentage` | NUMERIC(5,2) | % of investment total e.g. 60.00 — all allocations for one investment must sum to 100 |
 | `status` | ENUM | `ACTIVE` \| `PARTIALLY_WITHDRAWN` \| `FULLY_WITHDRAWN` |
@@ -650,7 +650,7 @@ investment_id: INV-456A (HIGH risk, $100K total)
 | `user_id` | UUID FK | |
 | `investment_id` | UUID FK | |
 | `type` | ENUM | `PROFIT` \| `CAPITAL` |
-| `amount_requested` | NUMERIC(18,2) | Must be ≥ minimum_capital_floor for capital type |
+| `amount_requested` | NUMERIC(18,4) | Must be ≥ minimum_capital_floor for capital type |
 | `currency` | TEXT | Currency of request, defaults to EUR |
 | `notice_days` | INTEGER | 15 \| 30 \| 45 — set from config at request time |
 | `status` | ENUM | `SUBMITTED` \| `NOTICE_PERIOD` \| `READY_FOR_APPROVAL` \| `TASKS_PENDING` \| `TASKS_COMPLETE` \| `COMPLETED` \| `CANCELLED` |
@@ -674,7 +674,7 @@ investment_id: INV-456A (HIGH risk, $100K total)
 | `withdrawal_request_id` | UUID FK → withdrawal_requests | Parent withdrawal |
 | `pool_id` | UUID FK → pools | Which pool this task sources funds from |
 | `admin_id` | UUID FK → admins | Pool Manager responsible for this task |
-| `amount` | NUMERIC(18,2) | Amount to be sourced from this specific pool |
+| `amount` | NUMERIC(18,4) | Amount to be sourced from this specific pool |
 | `currency` | TEXT | Currency of task, defaults to EUR |
 | `percentage` | NUMERIC(5,2) | % of total withdrawal this task covers |
 | `status` | ENUM | `PENDING` \| `ADMIN_APPROVED` \| `TRANSFER_DONE` \| `FAILED` |
@@ -1244,8 +1244,8 @@ To eliminate manual error and scaling bottlenecks, Pool Managers never calculate
      Step 1: Calculate raw share per lot allocation:
        lot_profit_raw = (lot_amount / pool_total_capital) × pool_total_profit
 
-     Step 2: Floor each share to 2 decimal places:
-       lot_profit_floored = FLOOR(lot_profit_raw × 100) / 100
+     Step 2: Floor each share to 4 decimal places:
+       lot_profit_floored = FLOOR(lot_profit_raw × 10000) / 10000
 
      Step 3: Find total remainder:
        remainder = pool_total_profit - SUM(all floored amounts)
@@ -1518,11 +1518,11 @@ V1 operates in **EUR only**. All ledger amounts, profit calculations, and withdr
 
 ### Fix 1 — The Penny Problem (Fractional Rounding)
 
-**Problem:** Proportional profit distribution using simple division produces fractional cents. Three users at 33.33% of a $10.00 profit pool each get $3.33 = $9.99 total. $0.01 is orphaned. Reconciliation audits fail.
+**Problem:** Proportional profit distribution using simple division produces fractional fractions. Three users at 33.33% of a €10.0000 profit pool each get €3.3333 = €9.9999 total. €0.0001 is orphaned. Reconciliation audits fail.
 
 **Why it matters:** Every reconciliation run flags a discrepancy. At scale this compounds across thousands of pools and periods into meaningful unaccounted amounts.
 
-**Fix:** Largest Remainder Method. Raw shares floored to 2 decimal places. Remaining cents distributed one at a time to users ranked by fractional loss, oldest investor as tiebreaker. Total always equals exactly the input profit. `ROUNDING_ADJUSTMENT` ledger entry provides audit trail. See Section 9.5.
+**Fix:** Largest Remainder Method. Raw shares floored to 4 decimal places. Remaining units (at the 4th decimal place) distributed one at a time to users ranked by fractional loss, oldest investor as tiebreaker. Total always equals exactly the input profit. `ROUNDING_ADJUSTMENT` ledger entry provides audit trail. See Section 9.5.
 
 ### Fix 2 — Transactional Outbox Pattern (Dual-Write Problem)
 

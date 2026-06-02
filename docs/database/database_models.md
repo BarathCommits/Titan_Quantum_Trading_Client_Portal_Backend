@@ -258,7 +258,7 @@ Represents a single client investment contract. One user can hold multiple inves
 | `start_date` | DATE | Yes | **Null until deposit is confirmed.** Set to the mapping date. |
 | `maturity_date` | DATE | Yes | **Null until deposit is confirmed.** Computed as `start_date + maturity_months`. |
 | `status` | ENUM | No | Lifecycle stage of this investment. |
-| `minimum_capital_floor` | NUMERIC(18,2) | No | The minimum capital that must remain in the investment. Default: 5,000. Admin-adjustable. Waived on full exit. |
+| `minimum_capital_floor` | NUMERIC(18,4) | No | The minimum capital that must remain in the investment. Default: 5,000. Admin-adjustable. Waived on full exit. |
 | `currency` | TEXT | No | Default `EUR`. The currency for the minimum capital floor. |
 | `created_at` | TIMESTAMPTZ | No | Immutable. |
 | `updated_at` | TIMESTAMPTZ | No | Auto-updated by trigger. |
@@ -290,7 +290,7 @@ Stores the risk split percentages for investments that are not 100% in a single 
 | `investment_id` | UUID → investments | No | The parent investment this split belongs to. Cascades delete. |
 | `risk_profile` | ENUM | No | Which risk profile this slice represents. |
 | `percentage` | NUMERIC(5,2) | No | The percentage of the total deposit going to this risk. e.g. `40.00`. All slices for one investment must sum to 100. |
-| `amount` | NUMERIC(18,2) | No | Computed: `percentage × total_deposit / 100`. The actual base currency value for this slice. |
+| `amount` | NUMERIC(18,4) | No | Computed: `percentage × total_deposit / 100`. The actual base currency value for this slice. |
 | `currency` | TEXT | No | Default `EUR`. The currency in which the split amount is denominated. |
 | `created_at` | TIMESTAMPTZ | No | Immutable. |
 
@@ -317,7 +317,7 @@ The core multi-admin tracking table. When an investment (or risk slice) is alloc
 | `investment_id` | UUID → investments | No | Which investment is being allocated. |
 | `pool_id` | UUID → pools | No | Which pool it is going into. |
 | `owned_by_admin_id` | UUID → admins | No | Which Pool Manager owns this slice. Determines who sees it and who handles withdrawals. |
-| `amount` | NUMERIC(18,2) | No | Base currency value allocated to this pool. |
+| `amount` | NUMERIC(18,4) | No | Base currency value allocated to this pool. |
 | `currency` | TEXT | No | Default `EUR`. The currency in which the pool allocation is denominated. |
 | `percentage` | NUMERIC(5,2) | No | Percentage of the investment total. All rows for one investment must sum to 100. |
 | `status` | ENUM | No | Tracks withdrawal state for this specific slice. |
@@ -358,9 +358,9 @@ Admin 1 sees only Row 1. Admin 2 sees only Row 2. SUPER_ADMIN sees both.
 | `pool_id` | UUID → pools | Yes | Which pool this entry relates to. |
 | `entry_type` | ENUM | No | The specific type of financial event. |
 | `direction` | ENUM | No | `CREDIT` (money in) or `DEBIT` (money out). |
-| `amount` | NUMERIC(18,2) | No | Base currency value of this ledger transaction. Represented in platform base currency. |
-| `currency` | TEXT | No | Default `EUR`. The platform base currency at the time of booking. |
-| `original_amount` | NUMERIC(18,2) | No | The amount in the client's original currency. Same as `amount` in V1 (EUR only). |
+| `amount` | NUMERIC(18,4) | No | Base currency value of this ledger transaction. Represented in platform base currency. |
+| `currency` | TEXT | No | Default `EUR`. Three-character ISO currency code. |
+| `original_amount` | NUMERIC(18,4) | No | The amount in the client's original currency. Same as `amount` in V1 (EUR only). |
 | `original_currency` | TEXT (3 chars) | No | ISO 4217 currency code of the original wire. `EUR` for all V1 transactions. |
 | `fx_rate` | NUMERIC(12,6) | No | Exchange rate at time of booking. `1.000000` for V1. Ready for multi-currency V2. |
 | `reference_id` | TEXT | No | **Unique.** External bank transaction ID or system-generated idempotency key. Prevents duplicate processing. |
@@ -438,7 +438,7 @@ Closing balances captured on the 1st of every month. These are the performance a
 | `investment_id` | UUID → investments | No | Which investment this snapshot is for. |
 | `user_id` | UUID → users | No | Denormalised for query efficiency. |
 | `snapshot_month` | DATE | No | The first day of the month. e.g. `2025-01-01`. Constrained to always be a month-start date. Unique per investment per month. |
-| `snapshot_balance` | NUMERIC(18,2) | No | The total CONFIRMED balance as of the last day of the previous month. |
+| `snapshot_balance` | NUMERIC(18,4) | No | The total CONFIRMED balance as of the last day of the previous month. |
 | `currency` | TEXT | No | Default `EUR`. The currency in which the snapshots are denominated. |
 | `created_at` | TIMESTAMPTZ | No | Immutable. When the snapshot was taken. |
 
@@ -470,7 +470,7 @@ Created when a client submits a withdrawal request. One record per withdrawal re
 | `user_id` | UUID → users | No | The client requesting withdrawal. |
 | `investment_id` | UUID → investments | No | Which investment is being withdrawn from. |
 | `type` | ENUM | No | `PROFIT` or `CAPITAL`. Determines which flow applies. |
-| `amount_requested` | NUMERIC(18,2) | No | The amount the client wants. Validated against capital floor for CAPITAL type. |
+| `amount_requested` | NUMERIC(18,4) | No | The amount the client wants. Validated against capital floor for CAPITAL type. |
 | `currency` | TEXT | No | Default `EUR`. The currency in which the withdrawal is requested. |
 | `notice_days` | INTEGER | No | References core.notice_period_config(notice_days). The notice period in days for this withdrawal. |
 | `status` | ENUM | No | The current stage in the withdrawal lifecycle. |
@@ -524,7 +524,7 @@ One row per pool involved in a withdrawal. When a client's investment spans mult
 | `withdrawal_request_id` | UUID → withdrawal_requests | No | The parent request this task belongs to. Cascades delete. |
 | `pool_id` | UUID → pools | No | Which pool this task sources funds from. |
 | `admin_id` | UUID → admins | No | The Pool Manager responsible for this task. |
-| `amount` | NUMERIC(18,2) | No | The amount this admin must source from their pool. |
+| `amount` | NUMERIC(18,4) | No | The amount this admin must source from their pool. |
 | `currency` | TEXT | No | Default `EUR`. The currency in which this task amount is denominated. |
 | `percentage` | NUMERIC(5,2) | No | Their percentage of the total withdrawal. All tasks for one request sum to 100. |
 | `status` | ENUM | No | The current state of this individual task. |
@@ -616,7 +616,7 @@ Records every bank transaction pulled from the Bank of Ireland AIS (Account Info
 |---|---|---|---|
 | `id` | UUID | No | Primary key. |
 | `bank_reference_id` | TEXT | No | **Unique.** The Bank of Ireland's unique identifier for this transaction. Used as the idempotency key to prevent duplicate processing. |
-| `amount_eur` | NUMERIC(18,2) | No | The amount received, in EUR. |
+| `amount_eur` | NUMERIC(18,4) | No | The amount received, in EUR. |
 | `remitter_name` | TEXT | No | The name of the person or company who sent the wire. |
 | `remitter_iban` | TEXT | No | The IBAN the wire came from. |
 | `remitter_bic` | TEXT | Yes | The BIC/SWIFT of the remitter's bank. |
@@ -703,9 +703,9 @@ Admin enters: Period = "Q1 2025", Total profit = €10,000
         │
         ├── Find all active investment_pool_allocations for this pool
         ├── For each investor: raw_share = (their_amount / pool_total) × profit
-        ├── Floor each share to 2 decimal places
-        ├── Rank by fractional loss — distribute remaining cents one at a time
-        │   Tiebreaker: oldest investor (earliest created_at) gets the cent
+        ├── Floor each share to 4 decimal places
+        ├── Rank by fractional loss — distribute remaining units (at the 4th decimal place) one at a time
+        │   Tiebreaker: oldest investor (earliest created_at) gets the unit
         └── Build preview table: User | Capital | % | Profit Allocated
         │
         ▼

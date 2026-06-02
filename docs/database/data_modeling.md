@@ -182,10 +182,10 @@ At small scale this seems trivial. At scale across hundreds of pools and thousan
 The profit distribution algorithm, documented explicitly in Section 9.5 of the master design, works as follows:
 
 1. Calculate each investor's raw share by multiplying their capital percentage by the total pool profit
-2. Floor each share to exactly 2 decimal places (not round — floor)
+2. Floor each share to exactly 4 decimal places (not round — floor)
 3. Sum all floored shares — they will total slightly less than the pool profit due to the flooring
 4. Rank investors by the size of their fractional loss (the difference between their raw share and their floored share), largest first
-5. Distribute the remaining cents one at a time to the top-ranked investors
+5. Distribute the remaining units (at the 4th decimal place) one at a time to the top-ranked investors
 6. In case of a tie in fractional loss, the oldest investor (earliest `created_at`) receives the cent
 
 The design document gives the concrete example: Alice (oldest), Bob, and Carol each have equal stakes in a $10.00 profit pool. All get floored to $3.33, leaving $0.01 unallocated. Alice gets the cent by tiebreaker rule. Final distribution: $3.34 + $3.33 + $3.33 = $10.00 exactly.
