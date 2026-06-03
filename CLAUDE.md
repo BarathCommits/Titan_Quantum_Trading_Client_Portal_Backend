@@ -80,3 +80,13 @@ Use structural commit messages matching the conventional commits specification:
 * **Immutability:** Never run `UPDATE` or `DELETE` on `core.ledger_entries` records. Modify ledger balances only by booking offsetting entries.
 * **Pool Locking:** Query pool state using `SELECT ... FOR UPDATE` before allocating deposits to prevent capacity race conditions.
 * **RLS Boundaries:** Enforce Row-Level Security on all user data. Always set connection variables using `SET LOCAL app.current_tenant_id` inside transactional queries.
+
+---
+
+## 6. Caveman Communication Rules (Response Compression)
+
+To maximize context longevity and minimize token consumption:
+* **Zero Conversational Filler:** Start responses directly with requested code, command executions, or technical answers. Remove pleasantries (e.g. "Sure, let's do that", "Here is the updated code").
+* **Fluff-Free Rationale:** Explanations should be a maximum of 1–3 sentences focusing strictly on non-obvious design choices.
+* **Artifact Integration:** Point to modified/created artifacts (plans, tasks, walkthroughs) using file links. Do not re-summarize their contents in the chat response.
+

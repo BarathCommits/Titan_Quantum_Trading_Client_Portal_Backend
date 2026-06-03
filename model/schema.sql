@@ -484,7 +484,7 @@ BEGIN
    WHERE investment_id = NEW.investment_id;
 
   IF total_pct > 100.00 THEN
-    RAISE EXCEPTION 'INTEGRITY ERROR: Risk split percentages for investment_id=% exceed 100%%. Current total: %%', NEW.investment_id, total_pct;
+    RAISE EXCEPTION 'INTEGRITY ERROR: Risk split percentages for investment_id=% exceed 100%%. Current total: %%%', NEW.investment_id, total_pct;
   END IF;
   RETURN NEW;
 END;
@@ -506,7 +506,7 @@ BEGIN
    WHERE investment_id = NEW.investment_id;
 
   IF total_pct != 100.00 THEN
-    RAISE EXCEPTION 'INTEGRITY ERROR: Risk splits for investment_id=% must sum to exactly 100.00%%. Current total: %%', NEW.investment_id, total_pct;
+    RAISE EXCEPTION 'INTEGRITY ERROR: Risk splits for investment_id=% must sum to exactly 100.00%%. Current total: %%%', NEW.investment_id, total_pct;
   END IF;
   RETURN NEW;
 END;
@@ -531,7 +531,7 @@ BEGIN
    WHERE withdrawal_request_id = NEW.withdrawal_request_id;
 
   IF total_pct > 100.00 THEN
-    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal task percentages for request_id=% exceed 100%%. Current total: %%', NEW.withdrawal_request_id, total_pct;
+    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal task percentages for request_id=% exceed 100%%. Current total: %%%', NEW.withdrawal_request_id, total_pct;
   END IF;
   RETURN NEW;
 END;
@@ -553,7 +553,7 @@ BEGIN
    WHERE withdrawal_request_id = NEW.withdrawal_request_id;
 
   IF total_pct != 100.00 THEN
-    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal tasks for request_id=% must sum to exactly 100.00%%. Current total: %%', NEW.withdrawal_request_id, total_pct;
+    RAISE EXCEPTION 'INTEGRITY ERROR: Withdrawal tasks for request_id=% must sum to exactly 100.00%%. Current total: %%%', NEW.withdrawal_request_id, total_pct;
   END IF;
   RETURN NEW;
 END;
