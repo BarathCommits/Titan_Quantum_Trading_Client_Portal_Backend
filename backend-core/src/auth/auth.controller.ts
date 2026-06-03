@@ -18,8 +18,8 @@ import {
   IsEnum,
   MinLength,
 } from 'class-validator';
-import { Response } from 'express';
-import { RequestWithUser } from '../common/guards/jwt-auth.guard';
+import type { Response } from 'express';
+import type { RequestWithUser } from '../common/guards/jwt-auth.guard';
 
 export class RegisterDto {
   @IsEmail()

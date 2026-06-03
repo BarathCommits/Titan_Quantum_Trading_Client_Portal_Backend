@@ -24,4 +24,4 @@ import { Admin } from '../admins/entities/admin.entity';
   ],
   exports: [TypeOrmModule],
 })
-export class DatabaseModule {}
+export class DatabaseModule { }
