@@ -61,3 +61,6 @@ issues.txt
 backend-payments/bin/
 
 titan.code-workspace
+.agents/
+.claude/
+.remember/

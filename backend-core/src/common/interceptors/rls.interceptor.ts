@@ -31,7 +31,7 @@ export class RlsInterceptor implements NestInterceptor {
       this.dataSource.transaction(async (transactionalEntityManager) => {
         // Enforce Row-Level Security session setting
         await transactionalEntityManager.query(
-          `SET LOCAL app.current_tenant_id = $1`,
+          `SELECT set_config('app.current_tenant_id', $1, true)`,
           [tenantId],
         );
 

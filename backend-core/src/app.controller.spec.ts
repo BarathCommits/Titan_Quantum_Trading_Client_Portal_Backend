@@ -15,8 +15,10 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('should return service live message', () => {
+      expect(appController.getHello()).toBe(
+        'The Titan Backend Core is LIVE. Ready to scale.',
+      );
     });
   });
 });

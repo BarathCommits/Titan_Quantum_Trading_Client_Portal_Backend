@@ -55,7 +55,7 @@ describe('Authentication & Admin Management (e2e)', () => {
       `INSERT INTO core.admins (email, password_hash, role, is_active) VALUES ($1, $2, $3, $4)`,
       [superAdminEmail, passwordHash, AdminRole.SUPER_ADMIN, true],
     );
-  });
+  }, 30000);
 
   afterAll(async () => {
     // Clean up

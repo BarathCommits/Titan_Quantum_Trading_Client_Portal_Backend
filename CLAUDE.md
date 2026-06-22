@@ -4,6 +4,16 @@ This file provides environment specifications, git workflow guidelines, common c
 
 ---
 
+## Technical Features & Architectural Records
+
+For detailed design specifications, decisions, and implementation details of newly added platform features:
+* **Client Onboarding & PII Cryptography:** [docs/features/client-onboarding-and-cryptography.md](file:///Users/balajisk/Downloads/titan/docs/features/client-onboarding-and-cryptography.md) — Details the Irish/EU compliance context, application-layer AES-256-GCM vault, transactional scrollable agreement signatures, and RLS interceptors.
+* **Onboarding API UX & Design Spec:** [docs/features/onboarding-ux-api-specification.md](file:///Users/balajisk/Downloads/titan/docs/features/onboarding-ux-api-specification.md) — Outlines API design strategies (polymorphism, draft storage, CRO/Bank lookups, and delegated signing) for HNWIs and Enterprise clients.
+* **Onboarding Postman Collection:** [docs/features/titan-funds-onboarding.postman_collection.json](file:///Users/balajisk/Downloads/titan/docs/features/titan-funds-onboarding.postman_collection.json) — Importable Postman v2.1 collection to test registration, login, draft profile storage, profile submissions, and agreements.
+* **Institutional Euro Deposits:** [docs/features/institutional-euro-deposits.md](file:///Users/balajisk/Downloads/titan/docs/features/institutional-euro-deposits.md) — Analyzes virtual IBAN (vIBAN) design, SEPA clearing, Central Bank safeguarding compliance, Modulr/Banking Circle APIs, and real-time webhook ledger reconciliation.
+
+---
+
 ## 1. System Environment & Version Specifications
 
 Ensure your local development environment aligns with these exact runtime versions:

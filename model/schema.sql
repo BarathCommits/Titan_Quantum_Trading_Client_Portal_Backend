@@ -144,6 +144,17 @@ CREATE TABLE core.user_profiles (
 
 COMMENT ON TABLE core.user_profiles IS 'Personally Identifiable Information (PII) encrypted at the application layer to defend against table dump leaks.';
 
+-- D2. ONBOARDING DRAFTS TABLE (Temporary progress save)
+CREATE TABLE core.onboarding_drafts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID UNIQUE NOT NULL REFERENCES core.users(id) ON DELETE CASCADE,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE core.onboarding_drafts IS 'Temporary JSON storage of client profile onboarding drafts before final submission.';
+
 -- E. POOLS TABLE (Multi-Admin sub-ledgers)
 CREATE TABLE core.pools (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -578,6 +589,7 @@ ALTER TABLE core.investment_risk_splits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE core.investment_pool_allocations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE core.withdrawal_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE core.monthly_balance_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core.onboarding_drafts ENABLE ROW LEVEL SECURITY;
 
 -- A. Users Tenant Isolation Policy
 CREATE POLICY tenant_isolation_policy ON core.users
@@ -586,6 +598,13 @@ CREATE POLICY tenant_isolation_policy ON core.users
 
 -- B. User Profiles Tenant Isolation Policy
 CREATE POLICY tenant_isolation_policy ON core.user_profiles
+  FOR ALL
+  USING (user_id IN (
+    SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+  ));
+
+-- B2. Onboarding Drafts Tenant Isolation Policy
+CREATE POLICY tenant_isolation_policy ON core.onboarding_drafts
   FOR ALL
   USING (user_id IN (
     SELECT id FROM core.users WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid

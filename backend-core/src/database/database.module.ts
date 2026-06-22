@@ -3,6 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { User } from '../users/entities/user.entity';
 import { Admin } from '../admins/entities/admin.entity';
+import { UserProfile } from '../users/entities/profile.entity';
+import { OnboardingDraft } from '../users/entities/draft.entity';
 
 @Module({
   imports: [
@@ -16,7 +18,7 @@ import { Admin } from '../admins/entities/admin.entity';
         username: configService.get<string>('DB_USERNAME', 'postgres'),
         password: configService.get<string>('DB_PASSWORD', 'postgres'),
         database: configService.get<string>('DB_DATABASE', 'titan_dev'),
-        entities: [User, Admin],
+        entities: [User, Admin, UserProfile, OnboardingDraft],
         synchronize: false, // Must not synchronize, table schemas are managed in model/schema.sql
         logging: false,
       }),
@@ -24,4 +26,4 @@ import { Admin } from '../admins/entities/admin.entity';
   ],
   exports: [TypeOrmModule],
 })
-export class DatabaseModule { }
+export class DatabaseModule {}
